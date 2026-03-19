@@ -319,7 +319,8 @@
 <div class="container">
   <header>
     <div class="title">ECHO</div>
-    <div class="subtitle">Variable Delay Monitor &nbsp;·&nbsp; <span style="color:var(--accent);opacity:0.6;">v0.5</span></div>
+    <div class="subtitle">Variable Delay Monitor</div>
+    <div style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v0.6</div>
   </header>
 
   <!-- Delay control -->
@@ -593,7 +594,7 @@ registerProcessor('delay-processor', DelayProcessor);
       mainBtn.textContent = '■ Stop';
       mainBtn.classList.add('active', 'stop');
       statusDot.classList.add('live');
-      setStatus('Live v0.5');
+      setStatus('Live — v0.6');
       showDebug(sr, bufferSamples, 'ScriptProcessor');
       drawViz();
     } catch(err) {
