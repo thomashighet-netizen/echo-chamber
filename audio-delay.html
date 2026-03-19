@@ -414,9 +414,13 @@
   let refWritePos = 0;
   let speakerLatencySamples = 0; // updated live from slider/detection
 
-  // LMS AEC state
-  let echoGainEst = 0.85;
-  const LMS_MU = 0.002;
+  // Multi-tap NLMS AEC
+  // A short FIR filter centred around the estimated latency covers latency
+  // uncertainty and early room reflections — much more robust than single-tap LMS.
+  const NLMS_TAPS = 512;    // filter length (~10ms at 48kHz)
+  const NLMS_MU   = 0.1;    // normalised step — fast convergence
+  const NLMS_EPS  = 1e-6;
+  let nlmsW = null;         // filter weights
 
   // Latency detection state
   let detecting = false;
@@ -639,10 +643,13 @@
 
       speakerLatencySamples = Math.floor(getLatencyMs() / 1000 * sampleRate);
 
-      // Ref buffer needs to be big enough for max latency
-      refBufSize = Math.max(Math.floor(0.4 * sampleRate), 8192);
+      // Ref buffer needs to cover latency + filter taps
+      refBufSize = Math.max(Math.floor(0.5 * sampleRate), 16384);
       refBuffer = new Float32Array(refBufSize);
       refWritePos = 0;
+
+      // Init NLMS filter weights to zero
+      nlmsW = new Float32Array(NLMS_TAPS);
 
       sourceNode = audioCtx.createMediaStreamSource(stream);
       analyser = audioCtx.createAnalyser();
@@ -659,19 +666,32 @@
         const volScale = gainNode.gain.value;
 
         for (let i = 0; i < rawInput.length; i++) {
-          // Look up what the speaker was emitting speakerLatencySamples ago
-          const refIdx = (refWritePos - speakerLatencySamples + refBufSize) % refBufSize;
-          const refSample = refBuffer[refIdx];
 
-          // AEC: subtract scaled reference
-          const echoCancelled = rawInput[i] - echoGainEst * refSample * volScale;
+          // --- Multi-tap NLMS AEC ---
+          // Build the reference vector: NLMS_TAPS samples of past output,
+          // starting at the estimated speaker latency offset.
+          // x[0] = most recent relevant ref sample, x[NLMS_TAPS-1] = oldest.
+          let echoEst = 0;
+          let xPower  = 0;
+          for (let t = 0; t < NLMS_TAPS; t++) {
+            const idx = (refWritePos - speakerLatencySamples - t + refBufSize * 2) % refBufSize;
+            const x = refBuffer[idx] * volScale;
+            echoEst += nlmsW[t] * x;
+            xPower  += x * x;
+          }
 
-          // LMS adapt
-          echoGainEst += LMS_MU * echoCancelled * refSample * volScale;
-          echoGainEst = Math.max(0, Math.min(2, echoGainEst));
+          // Error = mic - estimated echo
+          const err = rawInput[i] - echoEst;
 
-          // Write clean signal to delay buffer
-          ringBuffer[writePos] = echoCancelled;
+          // NLMS weight update
+          const norm = NLMS_MU / (xPower + NLMS_EPS);
+          for (let t = 0; t < NLMS_TAPS; t++) {
+            const idx = (refWritePos - speakerLatencySamples - t + refBufSize * 2) % refBufSize;
+            nlmsW[t] += norm * err * refBuffer[idx] * volScale;
+          }
+
+          // Write cleaned signal to delay ring buffer
+          ringBuffer[writePos] = err;
           writePos = (writePos + 1) % bufferSamples;
           if (!filled && writePos === 0) filled = true;
 
@@ -680,7 +700,7 @@
           readPos = (readPos + 1) % bufferSamples;
           output[i] = outSample;
 
-          // Store output in ref buffer
+          // Store output in ref buffer for next AEC iteration
           refBuffer[refWritePos] = outSample;
           refWritePos = (refWritePos + 1) % refBufSize;
         }
@@ -710,8 +730,8 @@
     if (gainNode) { gainNode.disconnect(); gainNode = null; }
     if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
     if (audioCtx) { audioCtx.close(); audioCtx = null; }
-    ringBuffer = null; refBuffer = null;
-    running = false; filled = false; echoGainEst = 0.85;
+    ringBuffer = null; refBuffer = null; nlmsW = null;
+    running = false; filled = false;
     mainBtn.textContent = '▶ Start Listening';
     mainBtn.classList.remove('active', 'stop');
     statusDot.classList.remove('live');
