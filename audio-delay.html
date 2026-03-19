@@ -359,11 +359,11 @@
     <div class="label-row">
       <span class="label">Speaker Latency</span>
       <span style="display:flex;align-items:baseline;gap:10px;">
-        <span><span class="value-display" id="latencyVal" style="font-size:20px;color:var(--warn)">40</span><span class="unit">ms</span></span>
+        <span><span class="value-display" id="latencyVal" style="font-size:20px;color:var(--warn)">178</span><span class="unit">ms</span></span>
         <button id="detectBtn" onclick="runLatencyDetection()" style="font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.2em;background:transparent;border:1px solid var(--dim);color:var(--dim);padding:4px 8px;border-radius:3px;cursor:pointer;transition:all 0.2s;" onmouseover="this.style.borderColor='var(--warn)';this.style.color='var(--warn)'" onmouseout="this.style.borderColor='var(--dim)';this.style.color='var(--dim)'">⟳ DETECT</button>
       </span>
     </div>
-    <input type="range" id="latencySlider" min="5" max="300" step="1" value="40">
+    <input type="range" id="latencySlider" min="5" max="300" step="1" value="178">
     <div class="ticks">
       <span class="tick">5ms</span>
       <span class="tick">75</span>
@@ -418,7 +418,7 @@
   // A short FIR filter centred around the estimated latency covers latency
   // uncertainty and early room reflections — much more robust than single-tap LMS.
   const NLMS_TAPS = 512;    // filter length (~10ms at 48kHz)
-  const NLMS_MU   = 0.1;    // normalised step — fast convergence
+  const NLMS_MU   = 0.2;    // higher step for strong echo (-8.8dB gain measured)
   const NLMS_EPS  = 1e-6;
   let nlmsW = null;         // filter weights
 
@@ -459,7 +459,7 @@
   // Init fills
   setSliderFill(delaySlider, ((1.0 - 0.1) / (10 - 0.1)) * 100);
   setSliderFill(volumeSlider, 80);
-  setSliderFill(latencySlider, ((40 - 5) / (300 - 5)) * 100);
+  setSliderFill(latencySlider, ((178 - 5) / (300 - 5)) * 100);
 
   delaySlider.addEventListener('input', () => {
     const v = parseFloat(delaySlider.value);
@@ -624,6 +624,95 @@
     else stop();
   }
 
+  // ─── Auto-calibration ────────────────────────────────────────────────────────
+  // Called at the start of every session. Plays a short 18.5kHz chirp through
+  // the speaker while recording the mic, cross-correlates to find round-trip
+  // latency, then updates speakerLatencySamples before audio processing begins.
+  // The whole thing takes ~700ms and is inaudible at normal listening volumes.
+
+  async function autoCalibrate(ctx, micStreamSrc, sr) {
+    setStatus('Calibrating latency...');
+    latencyNote.textContent = '⟳ Auto-calibrating...';
+
+    const chirpMs    = 40;
+    const listenMs   = 500;
+    const chirpN     = Math.floor(chirpMs / 1000 * sr);
+    const listenN    = Math.floor(listenMs / 1000 * sr);
+
+    // Build 18.5kHz Hann-windowed chirp
+    const chirpABuf = ctx.createBuffer(1, chirpN, sr);
+    const chirpData = chirpABuf.getChannelData(0);
+    for (let i = 0; i < chirpN; i++) {
+      const env = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / chirpN);
+      chirpData[i] = env * Math.sin(2 * Math.PI * 18500 * i / sr);
+    }
+
+    // Record mic during playback
+    const recBuf = new Float32Array(listenN);
+    let recPos = 0;
+
+    const calMicSrc = ctx.createMediaStreamSource(micStreamSrc);
+    const calRec    = ctx.createScriptProcessor(512, 1, 1);
+    const calSilent = ctx.createGain();
+    calSilent.gain.value = 0;
+    calMicSrc.connect(calRec);
+    calRec.connect(calSilent);
+    calSilent.connect(ctx.destination);
+    calRec.onaudioprocess = (e) => {
+      const d = e.inputBuffer.getChannelData(0);
+      for (let i = 0; i < d.length && recPos < listenN; i++) recBuf[recPos++] = d[i];
+    };
+
+    // Play chirp at low-but-detectable level
+    const chirpSrc  = ctx.createBufferSource();
+    chirpSrc.buffer = chirpABuf;
+    const chirpGain = ctx.createGain();
+    chirpGain.gain.value = 0.6;
+    chirpSrc.connect(chirpGain);
+    chirpGain.connect(ctx.destination);
+    chirpSrc.start(ctx.currentTime);
+
+    await new Promise(res => setTimeout(res, listenMs + 80));
+    calRec.disconnect(); calMicSrc.disconnect();
+
+    // Cross-correlate chirp vs recording
+    const maxLag = Math.floor(400 / 1000 * sr);
+    const minLag = Math.floor(5   / 1000 * sr);
+    let bestLag = minLag, bestScore = -Infinity;
+
+    let refPow = 0;
+    for (let i = 0; i < chirpN; i++) refPow += chirpData[i] * chirpData[i];
+    const refRms = Math.sqrt(refPow / chirpN) || 1;
+
+    for (let lag = minLag; lag < maxLag && lag + chirpN < listenN; lag++) {
+      let dot = 0, micPow = 0;
+      for (let j = 0; j < chirpN; j++) {
+        dot    += chirpData[j] * recBuf[lag + j];
+        micPow += recBuf[lag + j] * recBuf[lag + j];
+      }
+      const micRms = Math.sqrt(micPow / chirpN) || 1;
+      const score  = dot / (chirpN * refRms * micRms);
+      if (score > bestScore) { bestScore = score; bestLag = lag; }
+    }
+
+    const roundTripMs = (bestLag / sr) * 1000;
+    const oneWayMs    = Math.round(roundTripMs / 2);
+
+    if (bestScore > 0.04 && oneWayMs >= 5 && oneWayMs <= 350) {
+      const clamped = Math.max(5, Math.min(300, oneWayMs));
+      // Update slider + display
+      latencySlider.value = clamped;
+      latencyVal.textContent = clamped;
+      setSliderFill(latencySlider, ((clamped - 5) / (300 - 5)) * 100);
+      speakerLatencySamples = Math.floor(clamped / 1000 * sr);
+      latencyNote.textContent = `✓ Auto-detected ${clamped}ms (score: ${bestScore.toFixed(3)})`;
+    } else {
+      // Fall back to slider value — already set from last session or default
+      speakerLatencySamples = Math.floor(getLatencyMs() / 1000 * sr);
+      latencyNote.textContent = `⚠ Detection uncertain (score: ${bestScore.toFixed(3)}) — using ${getLatencyMs()}ms`;
+    }
+  }
+
   async function start() {
     try {
       setStatus('Requesting microphone...');
@@ -637,11 +726,12 @@
       const delaySec = parseFloat(delaySlider.value);
       const vol = parseInt(volumeSlider.value) / 100;
 
+      // ── Auto-calibrate latency before starting the delay pipeline ──
+      await autoCalibrate(audioCtx, stream, sampleRate);
+
       bufferSamples = Math.floor(delaySec * sampleRate);
       ringBuffer = new Float32Array(bufferSamples);
       writePos = 0; readPos = 0; filled = false;
-
-      speakerLatencySamples = Math.floor(getLatencyMs() / 1000 * sampleRate);
 
       // Ref buffer needs to cover latency + filter taps
       refBufSize = Math.max(Math.floor(0.5 * sampleRate), 16384);
@@ -668,9 +758,6 @@
         for (let i = 0; i < rawInput.length; i++) {
 
           // --- Multi-tap NLMS AEC ---
-          // Build the reference vector: NLMS_TAPS samples of past output,
-          // starting at the estimated speaker latency offset.
-          // x[0] = most recent relevant ref sample, x[NLMS_TAPS-1] = oldest.
           let echoEst = 0;
           let xPower  = 0;
           for (let t = 0; t < NLMS_TAPS; t++) {
@@ -680,27 +767,22 @@
             xPower  += x * x;
           }
 
-          // Error = mic - estimated echo
           const err = rawInput[i] - echoEst;
 
-          // NLMS weight update
           const norm = NLMS_MU / (xPower + NLMS_EPS);
           for (let t = 0; t < NLMS_TAPS; t++) {
             const idx = (refWritePos - speakerLatencySamples - t + refBufSize * 2) % refBufSize;
             nlmsW[t] += norm * err * refBuffer[idx] * volScale;
           }
 
-          // Write cleaned signal to delay ring buffer
           ringBuffer[writePos] = err;
           writePos = (writePos + 1) % bufferSamples;
           if (!filled && writePos === 0) filled = true;
 
-          // Read delayed output
           let outSample = filled ? ringBuffer[readPos] : 0;
           readPos = (readPos + 1) % bufferSamples;
           output[i] = outSample;
 
-          // Store output in ref buffer for next AEC iteration
           refBuffer[refWritePos] = outSample;
           refWritePos = (refWritePos + 1) % refBufSize;
         }
