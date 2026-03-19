@@ -3,656 +3,269 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Echo Chamber</title>
-<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Bebas+Neue&display=swap" rel="stylesheet">
+<title>Record & Compare</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
 <style>
-  :root {
-    --bg: #0a0a0f;
-    --panel: #10101a;
-    --border: #1e1e30;
-    --accent: #00ffaa;
-    --accent2: #ff4466;
-    --warn: #ffaa00;
-    --text: #c8c8e0;
-    --dim: #44445a;
-    --glow: 0 0 20px rgba(0,255,170,0.3);
-  }
-
   * { box-sizing: border-box; margin: 0; padding: 0; }
-
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: 'Share Tech Mono', monospace;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 20px;
-    overflow-x: hidden;
-  }
-
-  body::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    background:
-      repeating-linear-gradient(
-        0deg,
-        transparent,
-        transparent 2px,
-        rgba(0,255,170,0.015) 2px,
-        rgba(0,255,170,0.015) 4px
-      );
-    pointer-events: none;
-    z-index: 0;
-  }
-
-  .container {
-    position: relative;
-    z-index: 1;
-    width: 100%;
-    max-width: 480px;
-  }
-
-  header {
-    text-align: center;
-    margin-bottom: 36px;
-  }
-
-  .title {
-    font-family: 'Bebas Neue', sans-serif;
-    font-size: clamp(48px, 12vw, 80px);
-    letter-spacing: 0.12em;
-    color: var(--accent);
-    text-shadow: 0 0 40px rgba(0,255,170,0.5), 0 0 80px rgba(0,255,170,0.2);
-    line-height: 1;
-  }
-
-  .subtitle {
-    font-size: 11px;
-    letter-spacing: 0.3em;
-    color: var(--dim);
-    text-transform: uppercase;
-    margin-top: 6px;
-  }
-
-  .panel {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 28px;
-    margin-bottom: 16px;
-  }
-
-  .label-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    margin-bottom: 12px;
-  }
-
-  .label {
-    font-size: 10px;
-    letter-spacing: 0.25em;
-    text-transform: uppercase;
-    color: var(--dim);
-  }
-
-  .value-display {
-    font-size: 28px;
-    color: var(--accent);
-    font-family: 'Bebas Neue', sans-serif;
-    letter-spacing: 0.05em;
-    text-shadow: var(--glow);
-    transition: color 0.2s;
-  }
-
-  .unit {
-    font-size: 13px;
-    color: var(--dim);
-    margin-left: 3px;
-  }
-
-  /* Slider */
-  input[type=range] {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 100%;
-    height: 2px;
-    background: var(--border);
-    outline: none;
-    cursor: pointer;
-    position: relative;
-  }
-
-  input[type=range]::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 18px;
-    height: 18px;
-    background: var(--accent);
-    border-radius: 50%;
-    box-shadow: 0 0 10px rgba(0,255,170,0.6);
-    cursor: pointer;
-    transition: transform 0.15s, box-shadow 0.15s;
-  }
-
-  input[type=range]::-webkit-slider-thumb:hover {
-    transform: scale(1.25);
-    box-shadow: 0 0 20px rgba(0,255,170,0.9);
-  }
-
-  input[type=range]::-moz-range-thumb {
-    width: 18px;
-    height: 18px;
-    background: var(--accent);
-    border: none;
-    border-radius: 50%;
-    box-shadow: 0 0 10px rgba(0,255,170,0.6);
-    cursor: pointer;
-  }
-
-  /* Tick marks */
-  .ticks {
-    display: flex;
-    justify-content: space-between;
-    margin-top: 8px;
-  }
-
-  .tick {
-    font-size: 9px;
-    color: var(--dim);
-    letter-spacing: 0;
-    text-align: center;
-    min-width: 30px;
-  }
-
-  /* Volume slider - different color */
-  #volumeSlider::-webkit-slider-thumb {
-    background: var(--warn);
-    box-shadow: 0 0 10px rgba(255,170,0,0.6);
-  }
-
-  #volumeSlider::-webkit-slider-thumb:hover {
-    box-shadow: 0 0 20px rgba(255,170,0,0.9);
-  }
-
-  .vol-value { color: var(--warn); text-shadow: 0 0 20px rgba(255,170,0,0.3); }
-
-  /* Visualizer */
-  .viz-panel {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 16px;
-    margin-bottom: 16px;
-  }
-
-  canvas {
-    width: 100%;
-    height: 60px;
-    display: block;
-    border-radius: 2px;
-  }
-
-  /* Big button */
-  .btn {
-    width: 100%;
-    padding: 18px;
-    background: transparent;
-    border: 1px solid var(--accent);
-    color: var(--accent);
-    font-family: 'Bebas Neue', sans-serif;
-    font-size: 22px;
-    letter-spacing: 0.3em;
-    cursor: pointer;
-    border-radius: 4px;
-    text-transform: uppercase;
-    transition: background 0.2s, box-shadow 0.2s, color 0.2s;
-    position: relative;
-    overflow: hidden;
-  }
-
-  .btn:hover {
-    background: rgba(0,255,170,0.08);
-    box-shadow: var(--glow);
-  }
-
-  .btn.active {
-    background: rgba(0,255,170,0.12);
-    box-shadow: 0 0 30px rgba(0,255,170,0.4);
-    border-color: var(--accent);
-  }
-
-  .btn.active::after {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 1px;
-    background: linear-gradient(90deg, transparent, var(--accent), transparent);
-    animation: scan 2s linear infinite;
-  }
-
-  @keyframes scan {
-    0% { top: 0; }
-    100% { top: 100%; }
-  }
-
-  .btn.stop {
-    border-color: var(--accent2);
-    color: var(--accent2);
-  }
-
-  .btn.stop:hover {
-    background: rgba(255,68,102,0.08);
-    box-shadow: 0 0 20px rgba(255,68,102,0.3);
-  }
-
-  /* Status */
-  .status-bar {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-top: 16px;
-    padding: 10px 14px;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    font-size: 10px;
-    letter-spacing: 0.2em;
-    color: var(--dim);
-    text-transform: uppercase;
-  }
-
-  .dot {
-    width: 6px; height: 6px;
-    border-radius: 50%;
-    background: var(--dim);
-    flex-shrink: 0;
-    transition: background 0.3s, box-shadow 0.3s;
-  }
-
-  .dot.live {
-    background: var(--accent);
-    box-shadow: 0 0 8px rgba(0,255,170,0.8);
-    animation: pulse 1s ease-in-out infinite;
-  }
-
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
-  }
-
-  .status-text { flex: 1; }
-
-  /* Buffer fill */
-  .buffer-track {
-    height: 2px;
-    background: var(--border);
-    border-radius: 1px;
-    margin-top: 10px;
-    overflow: hidden;
-  }
-
-  .buffer-fill {
-    height: 100%;
-    background: var(--accent);
-    border-radius: 1px;
-    width: 0%;
-    transition: width 0.1s linear;
-    box-shadow: 0 0 6px rgba(0,255,170,0.5);
-  }
-
-  /* Slider track fill via CSS custom property */
-  input[type=range] {
-    background: linear-gradient(to right, var(--accent) 0%, var(--accent) var(--fill, 0%), var(--border) var(--fill, 0%), var(--border) 100%);
-  }
-
-  #volumeSlider {
-    background: linear-gradient(to right, var(--warn) 0%, var(--warn) var(--fill, 0%), var(--border) var(--fill, 0%), var(--border) 100%);
-  }
+  body { background: #0a0a0f; color: #ccc; font-family: 'Share Tech Mono', monospace;
+    padding: 24px 20px; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
+  h1 { color: #00ffaa; font-size: 24px; letter-spacing: 0.2em; margin-bottom: 4px; }
+  .sub { color: #444; font-size: 11px; letter-spacing: 0.2em; margin-bottom: 28px; text-align:center; }
+  .panel { background: #111; border: 1px solid #222; border-radius: 4px;
+    padding: 16px; margin-bottom: 12px; width: 100%; max-width: 440px; }
+  .label { font-size: 10px; letter-spacing: 0.2em; color: #555; margin-bottom: 10px; text-transform:uppercase; }
+  .btn { font-family:'Share Tech Mono',monospace; font-size:14px; letter-spacing:0.2em;
+    background:transparent; border:2px solid #00ffaa; color:#00ffaa;
+    padding:14px; border-radius:4px; cursor:pointer; width:100%; max-width:440px; margin-bottom:10px;
+    transition: all 0.15s; }
+  .btn:active { background: rgba(0,255,170,0.1); }
+  .btn.on  { background:rgba(0,255,170,0.12); box-shadow:0 0 20px rgba(0,255,170,0.25); }
+  .btn.red { border-color:#ff4455; color:#ff4455; animation: blink 0.8s step-end infinite; }
+  .btn.blue { border-color:#44aaff; color:#44aaff; }
+  .btn:disabled { opacity:0.3; cursor:not-allowed; animation:none; }
+  @keyframes blink { 50% { opacity:0.3; } }
+  .dbg { background:#0a0a0a; border:2px solid #00ffaa; border-radius:4px;
+    padding:14px; font-size:13px; color:#00ffaa; line-height:2;
+    width:100%; max-width:440px; margin-bottom:12px; white-space:pre-wrap; }
+  .step { display:flex; align-items:center; gap:10px; margin-bottom:8px; }
+  .step-num { width:24px; height:24px; border-radius:50%; border:1px solid #333;
+    display:flex; align-items:center; justify-content:center; font-size:11px; color:#555; flex-shrink:0; }
+  .step-num.done { border-color:#00ffaa; color:#00ffaa; }
+  .step-num.active { border-color:#ffcc00; color:#ffcc00; }
+  .step-text { font-size:12px; color:#555; }
+  .step-text.done { color:#00ffaa; }
+  .step-text.active { color:#ffcc00; }
+  canvas { width:100%; height:80px; display:block; background:#0a0a0a; border-radius:2px; margin-top:8px; }
+  .dl-btn { font-family:'Share Tech Mono',monospace; font-size:12px; letter-spacing:0.15em;
+    background:transparent; border:1px solid #44aaff; color:#44aaff;
+    padding:8px 14px; border-radius:3px; cursor:pointer; margin-right:8px; margin-top:8px; }
+  .dl-btn:disabled { opacity:0.3; cursor:not-allowed; }
+  input[type=file] { display:none; }
+  .file-btn { font-family:'Share Tech Mono',monospace; font-size:12px; letter-spacing:0.15em;
+    background:transparent; border:1px solid #555; color:#888;
+    padding:8px 14px; border-radius:3px; cursor:pointer; width:100%; text-align:center; }
+  .file-btn.loaded { border-color:#00ffaa; color:#00ffaa; }
+  .version { color:#444; font-size:10px; margin-top:20px; letter-spacing:0.2em; }
 </style>
 </head>
 <body>
 
-<div class="container">
-  <header>
-    <div class="title">ECHO</div>
-    <div class="subtitle">Variable Delay Monitor</div>
-    <div style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v0.8</div>
-  </header>
+<h1>RECORD + COMPARE</h1>
+<div class="sub">Play audio on PC speakers → record on phone → download both for analysis</div>
 
-  <!-- Delay control -->
-  <div class="panel">
-    <div class="label-row">
-      <span class="label">Delay</span>
-      <span><span class="value-display" id="delayVal">1.0</span><span class="unit">s</span></span>
-    </div>
-    <input type="range" id="delaySlider" min="0.1" max="10" step="0.1" value="1.0">
-    <div class="ticks">
-      <span class="tick">0.1</span>
-      <span class="tick">2.5</span>
-      <span class="tick">5</span>
-      <span class="tick">7.5</span>
-      <span class="tick">10</span>
-    </div>
-  </div>
-
-  <!-- Volume control -->
-  <div class="panel">
-    <div class="label-row">
-      <span class="label">Output Volume</span>
-      <span><span class="value-display vol-value" id="volVal">80</span><span class="unit">%</span></span>
-    </div>
-    <input type="range" id="volumeSlider" min="0" max="100" step="1" value="80">
-    <div class="ticks">
-      <span class="tick">0</span>
-      <span class="tick">25</span>
-      <span class="tick">50</span>
-      <span class="tick">75</span>
-      <span class="tick">100</span>
-    </div>
-  </div>
-
-  <!-- Speaker latency control -->
-  <div class="panel">
-    <div class="label-row">
-      <span class="label">Speaker Latency</span>
-      <span style="display:flex;align-items:baseline;gap:10px;">
-        <span><span class="value-display" id="latencyVal" style="font-size:20px;color:var(--warn)">178</span><span class="unit">ms</span></span>
-        <button id="detectBtn" onclick="runLatencyDetection()" style="font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.2em;background:transparent;border:1px solid var(--dim);color:var(--dim);padding:4px 8px;border-radius:3px;cursor:pointer;transition:all 0.2s;" onmouseover="this.style.borderColor='var(--warn)';this.style.color='var(--warn)'" onmouseout="this.style.borderColor='var(--dim)';this.style.color='var(--dim)'">⟳ DETECT</button>
-      </span>
-    </div>
-    <input type="range" id="latencySlider" min="5" max="300" step="1" value="178">
-    <div class="ticks">
-      <span class="tick">5ms</span>
-      <span class="tick">75</span>
-      <span class="tick">150</span>
-      <span class="tick">225</span>
-      <span class="tick">300ms</span>
-    </div>
-    <div class="label" style="margin-top:8px;font-size:9px;color:var(--dim);" id="latencyNote">Estimated speaker→mic travel time. Click Detect to measure.</div>
-  </div>
-
-  <!-- Visualizer -->
-  <div class="viz-panel">
-    <div class="label" style="margin-bottom:10px;">Input Level</div>
-    <canvas id="viz" height="60"></canvas>
-    <div class="buffer-track">
-      <div class="buffer-fill" id="bufferFill"></div>
-    </div>
-    <div class="label" style="margin-top:6px; font-size:9px;" id="bufferLabel">Buffer: 0.0s / 0.0s</div>
-  </div>
-
-  <button class="btn" id="mainBtn" onclick="toggle()">▶ Start Listening</button>
-
-  <div class="status-bar">
-    <div class="dot" id="statusDot"></div>
-    <span class="status-text" id="statusText">Idle — Click start to begin</span>
-  </div>
-  <div style="margin-top:12px;background:#111;border:2px solid var(--accent);border-radius:4px;padding:12px;font-size:14px;letter-spacing:0.1em;color:var(--accent);line-height:2;word-break:break-all;" id="debugInfo">—</div>
+<!-- Steps -->
+<div class="panel">
+  <div class="label">Steps</div>
+  <div class="step"><div class="step-num" id="s1">1</div><div class="step-text" id="st1">Load the reference audio file (optional)</div></div>
+  <div class="step"><div class="step-num" id="s2">2</div><div class="step-text" id="st2">Set record duration</div></div>
+  <div class="step"><div class="step-num" id="s3">3</div><div class="step-text" id="st3">Press Record — play audio on PC immediately</div></div>
+  <div class="step"><div class="step-num" id="s4">4</div><div class="step-text" id="st4">Download the recording and share with Claude</div></div>
 </div>
 
+<!-- Reference file (optional) -->
+<div class="panel">
+  <div class="label">Reference File (optional — helps Claude compare)</div>
+  <label class="file-btn" id="fileLabel" for="fileInput">📁 Tap to load audio file</label>
+  <input type="file" id="fileInput" accept="audio/*">
+  <canvas id="refCanvas"></canvas>
+</div>
+
+<!-- Duration -->
+<div class="panel">
+  <div class="label">Record Duration</div>
+  <div style="display:flex;align-items:baseline;gap:8px;">
+    <span style="font-size:28px;color:#ffcc00;" id="durVal">5</span>
+    <span style="color:#555;">seconds</span>
+  </div>
+  <input type="range" id="durSlider" min="2" max="30" value="5" step="1"
+    oninput="document.getElementById('durVal').textContent=this.value;"
+    style="-webkit-appearance:none;width:100%;height:2px;background:#222;outline:none;cursor:pointer;margin-top:10px;">
+  <style>#durSlider::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;background:#ffcc00;border-radius:50%;}</style>
+</div>
+
+<!-- Debug -->
+<div class="dbg" id="dbg">Ready — load a file or go straight to recording.</div>
+
+<!-- Waveform -->
+<div class="panel">
+  <div class="label">Recorded Waveform</div>
+  <canvas id="recCanvas"></canvas>
+</div>
+
+<!-- Buttons -->
+<button class="btn" id="recBtn" onclick="startRecord()">⏺ RECORD</button>
+<div style="width:100%;max-width:440px;">
+  <button class="dl-btn" id="dlRec" onclick="downloadWav(recSamples, recSampleRate, 'recorded.wav')" disabled>↓ recorded.wav</button>
+  <button class="dl-btn" id="dlRef" onclick="downloadWav(refSamples, refSampleRate, 'reference.wav')" disabled>↓ reference.wav</button>
+</div>
+
+<div class="version">v0.1 — record & compare</div>
+
 <script>
-  let audioCtx    = null;
-  let sourceNode  = null;
-  let procNode    = null;
-  let outGainNode = null;
-  let analyser    = null;
-  let stream      = null;
-  let running     = false;
-  let filled      = false;
-  let bufferSamples = 0;
+  let recSamples = null, recSampleRate = 48000;
+  let refSamples = null, refSampleRate = 48000;
+  let recording = false;
 
-  // Main delay ring buffer — what gets sent to speaker
-  let ringBuf = null;
-  let wPos = 0, rPos = 0;
+  // ── Reference file loader ──
+  document.getElementById('fileInput').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    document.getElementById('fileLabel').textContent = '✓ ' + file.name;
+    document.getElementById('fileLabel').classList.add('loaded');
+    setStep(1, 'done', '✓ Reference loaded: ' + file.name);
 
-  // Speaker reference buffer — a copy of what was sent to the speaker,
-  // so we can look back latN samples and subtract it from the mic.
-  let refBuf     = null;
-  let refBufSize = 0;
-  let refW       = 0;
-  let latN       = 0;
-
-  // Simple scalar gain for subtraction — how loud the speaker echo is at the mic.
-  // Measured: -8.8dB = ~0.36 linear. Start here, user can tune if needed.
-  let echoGain = 0.36;
-
-  const delaySlider   = document.getElementById('delaySlider');
-  const volumeSlider  = document.getElementById('volumeSlider');
-  const latencySlider = document.getElementById('latencySlider');
-  const delayVal      = document.getElementById('delayVal');
-  const volVal        = document.getElementById('volVal');
-  const latencyVal    = document.getElementById('latencyVal');
-  const latencyNote   = document.getElementById('latencyNote');
-  const detectBtn     = document.getElementById('detectBtn');
-  const mainBtn       = document.getElementById('mainBtn');
-  const statusDot     = document.getElementById('statusDot');
-  const statusText    = document.getElementById('statusText');
-  const bufferFill    = document.getElementById('bufferFill');
-  const bufferLabel   = document.getElementById('bufferLabel');
-  const canvas        = document.getElementById('viz');
-  const ctx2d         = canvas.getContext('2d');
-
-  function setSliderFill(s, pct) { s.style.setProperty('--fill', pct + '%'); }
-  function getLatencyMs() { return parseInt(latencySlider.value); }
-
-  setSliderFill(delaySlider,   ((1.0 - 0.1) / (10 - 0.1)) * 100);
-  setSliderFill(volumeSlider,  80);
-  setSliderFill(latencySlider, ((178 - 5) / (300 - 5)) * 100);
-
-  delaySlider.addEventListener('input', () => {
-    const v = parseFloat(delaySlider.value);
-    delayVal.textContent = v.toFixed(1);
-    setSliderFill(delaySlider, ((v - 0.1) / (10 - 0.1)) * 100);
-  });
-
-  volumeSlider.addEventListener('input', () => {
-    const v = parseInt(volumeSlider.value);
-    volVal.textContent = v;
-    setSliderFill(volumeSlider, v);
-    if (outGainNode) outGainNode.gain.setTargetAtTime(v / 100, audioCtx.currentTime, 0.05);
-  });
-
-  latencySlider.addEventListener('input', () => {
-    const v = parseInt(latencySlider.value);
-    latencyVal.textContent = v;
-    setSliderFill(latencySlider, ((v - 5) / (300 - 5)) * 100);
-    latencyNote.textContent = 'Manually set.';
-    if (audioCtx) latN = Math.floor(v / 1000 * audioCtx.sampleRate);
-  });
-
-  // ── Latency detection ──
-  let detecting = false;
-  async function runLatencyDetection() {
-    if (detecting) return;
-    detecting = true;
-    detectBtn.textContent = '⟳ DETECTING...';
-    detectBtn.style.color = 'var(--warn)';
-    detectBtn.style.borderColor = 'var(--warn)';
-    latencyNote.textContent = 'Playing probe tone... keep quiet.';
     try {
-      const ds = await navigator.mediaDevices.getUserMedia({
-        audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false},video:false});
-      const dc = new AudioContext();
-      const sr = dc.sampleRate;
-      const chirpN = Math.floor(40/1000*sr), listenN = Math.floor(500/1000*sr);
-      const cb = dc.createBuffer(1, chirpN, sr);
-      const cd = cb.getChannelData(0);
-      for (let i=0;i<chirpN;i++){const e=0.5-0.5*Math.cos(2*Math.PI*i/chirpN);cd[i]=e*Math.sin(2*Math.PI*18500*i/sr);}
-      const rec=new Float32Array(listenN); let rp=0;
-      const ms=dc.createMediaStreamSource(ds),sp=dc.createScriptProcessor(512,1,1),sg=dc.createGain();
-      sg.gain.value=0; ms.connect(sp);sp.connect(sg);sg.connect(dc.destination);
-      sp.onaudioprocess=(e)=>{const d=e.inputBuffer.getChannelData(0);for(let i=0;i<d.length&&rp<listenN;i++)rec[rp++]=d[i];};
-      const cs=dc.createBufferSource(),cg=dc.createGain();cg.gain.value=0.6;
-      cs.buffer=cb;cs.connect(cg);cg.connect(dc.destination);cs.start();
-      await new Promise(r=>setTimeout(r,580));
-      sp.disconnect();ms.disconnect();ds.getTracks().forEach(t=>t.stop());dc.close();
-      let refPow=0;for(let i=0;i<chirpN;i++)refPow+=cd[i]*cd[i];
-      const refRms=Math.sqrt(refPow/chirpN)||1;
-      let bestLag=Math.floor(5/1000*sr),bestScore=-Infinity;
-      for(let lag=bestLag;lag<Math.floor(400/1000*sr)&&lag+chirpN<listenN;lag++){
-        let dot=0,mp=0;for(let j=0;j<chirpN;j++){dot+=cd[j]*rec[lag+j];mp+=rec[lag+j]*rec[lag+j];}
-        const score=dot/(chirpN*refRms*(Math.sqrt(mp/chirpN)||1));
-        if(score>bestScore){bestScore=score;bestLag=lag;}
+      const arrayBuf = await file.arrayBuffer();
+      const tmpCtx   = new AudioContext();
+      const decoded  = await tmpCtx.decodeAudioData(arrayBuf);
+      // Mix to mono
+      refSampleRate = decoded.sampleRate;
+      refSamples = new Float32Array(decoded.length);
+      for (let ch = 0; ch < decoded.numberOfChannels; ch++) {
+        const chData = decoded.getChannelData(ch);
+        for (let i = 0; i < decoded.length; i++) refSamples[i] += chData[i];
       }
-      const oneWayMs=Math.round((bestLag/sr)*500);
-      if(bestScore>0.04&&oneWayMs>=5&&oneWayMs<=350){
-        const c=Math.max(5,Math.min(300,oneWayMs));
-        latencySlider.value=c;latencyVal.textContent=c;
-        setSliderFill(latencySlider,((c-5)/(300-5))*100);
-        latencyNote.textContent=`✓ Detected ${c}ms (score: ${bestScore.toFixed(3)})`;
-        if (audioCtx) latN = Math.floor(c / 1000 * audioCtx.sampleRate);
-      } else {
-        latencyNote.textContent=`⚠ Uncertain (score: ${bestScore.toFixed(3)}) — using ${getLatencyMs()}ms`;
+      if (decoded.numberOfChannels > 1) {
+        for (let i = 0; i < refSamples.length; i++) refSamples[i] /= decoded.numberOfChannels;
       }
-    } catch(e){ latencyNote.textContent='⚠ Failed: '+e.message; }
-    detectBtn.textContent='⟳ DETECT';
-    detectBtn.style.color='';detectBtn.style.borderColor='';
-    detecting=false;
-  }
-
-  function updateProgress(w, delay, sr) {
-    if (filled) {
-      bufferFill.style.width = '100%';
-      const d = parseFloat(delaySlider.value);
-      bufferLabel.textContent = `Buffer: ${d.toFixed(1)}s / ${d.toFixed(1)}s`;
-    } else {
-      bufferFill.style.width = ((w / delay) * 100) + '%';
-      bufferLabel.textContent = `Buffer: ${(w/sr).toFixed(1)}s / ${(delay/sr).toFixed(1)}s`;
+      tmpCtx.close();
+      drawWave('refCanvas', refSamples, '#44aaff');
+      document.getElementById('dlRef').disabled = false;
+      log(`Reference: ${decoded.duration.toFixed(2)}s @ ${refSampleRate}Hz`);
+    } catch(err) {
+      log('Could not decode file: ' + err.message);
     }
-  }
+  });
 
-  async function toggle() { if (!running) await start(); else stop(); }
+  // ── Recording ──
+  async function startRecord() {
+    if (recording) return;
+    recording = true;
+    recSamples = null;
 
-  async function start() {
+    const durSec = parseInt(document.getElementById('durSlider').value);
+    setStep(3, 'active', `Recording ${durSec}s... play audio on PC now!`);
+    document.getElementById('recBtn').textContent = '⏺ RECORDING...';
+    document.getElementById('recBtn').classList.add('red');
+    document.getElementById('recBtn').disabled = true;
+
     try {
-      setStatus('Requesting microphone...');
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false},video:false});
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+        video: false
+      });
 
-      audioCtx      = new AudioContext();
-      const sr      = audioCtx.sampleRate;
-      bufferSamples = Math.floor(parseFloat(delaySlider.value) * sr);
-      const vol     = parseInt(volumeSlider.value) / 100;
-      latN          = Math.floor(getLatencyMs() / 1000 * sr);
+      const ctx  = new AudioContext();
+      recSampleRate = ctx.sampleRate;
+      const totalSamples = Math.floor(durSec * recSampleRate);
+      const captured = new Float32Array(totalSamples);
+      let pos = 0;
 
-      // Ref buffer: holds recent speaker output. Must be > latN.
-      refBufSize = Math.max(Math.floor(sr * 0.6), 32768);
-      refBuf     = new Float32Array(refBufSize);
-      refW       = 0;
+      const src  = ctx.createMediaStreamSource(stream);
+      const proc = ctx.createScriptProcessor(4096, 1, 1);
+      const sink = ctx.createGain(); sink.gain.value = 0;
+      src.connect(proc); proc.connect(sink); sink.connect(ctx.destination);
 
-      ringBuf = new Float32Array(bufferSamples);
-      wPos = 0; rPos = 0; filled = false;
-
-      sourceNode  = audioCtx.createMediaStreamSource(stream);
-      analyser    = audioCtx.createAnalyser();
-      analyser.fftSize = 256;
-      outGainNode = audioCtx.createGain();
-      outGainNode.gain.value = vol;
-
-      procNode = audioCtx.createScriptProcessor(4096, 1, 1);
-      procNode.onaudioprocess = (e) => {
-        const inp = e.inputBuffer.getChannelData(0);
-        const out = e.outputBuffer.getChannelData(0);
-
-        for (let i = 0; i < inp.length; i++) {
-
-          // What did the speaker play latN samples ago?
-          const refIdx    = (refW - latN + refBufSize) % refBufSize;
-          const spkSample = refBuf[refIdx];
-
-          // Subtract it from mic input — this removes the feedback loop.
-          const clean = inp[i] - echoGain * spkSample;
-
-          // Write clean signal into delay buffer
-          ringBuf[wPos] = clean;
-          wPos = (wPos + 1) % bufferSamples;
-          if (!filled && wPos === 0) filled = true;
-
-          // Read delayed output
-          const outSample = filled ? ringBuf[rPos] : 0;
-          rPos = (rPos + 1) % bufferSamples;
-          out[i] = outSample;
-
-          // Store speaker output in ref buffer (after gain, since that's what the speaker emits)
-          refBuf[refW] = outSample * vol;
-          refW = (refW + 1) % refBufSize;
+      proc.onaudioprocess = (e) => {
+        const data = e.inputBuffer.getChannelData(0);
+        for (let i = 0; i < data.length && pos < totalSamples; i++) {
+          captured[pos++] = data[i];
         }
-
-        updateProgress(wPos, bufferSamples, sr);
+        const pct = Math.floor(pos / totalSamples * 100);
+        const remaining = ((totalSamples - pos) / recSampleRate).toFixed(1);
+        log(`Recording... ${pct}% (${remaining}s left)\nsr:${recSampleRate}  samples:${pos}/${totalSamples}`);
       };
 
-      sourceNode.connect(analyser);
-      sourceNode.connect(procNode);
-      procNode.connect(outGainNode);
-      outGainNode.connect(audioCtx.destination);
+      // Count down
+      await new Promise(res => setTimeout(res, durSec * 1000 + 200));
 
-      running = true;
-      mainBtn.textContent = '■ Stop';
-      mainBtn.classList.add('active', 'stop');
-      statusDot.classList.add('live');
-      setStatus('Live — v0.8');
+      proc.disconnect(); src.disconnect();
+      stream.getTracks().forEach(t => t.stop());
+      ctx.close();
 
-      // Show latN in debug so we can verify
-      const dbgEl = document.getElementById('debugInfo');
-      if (dbgEl) dbgEl.textContent = `sr:${sr}  latN:${latN}  echoGain:${echoGain}`;
+      recSamples = captured;
+      drawWave('recCanvas', recSamples, '#00ffaa');
+      document.getElementById('dlRec').disabled = false;
+      setStep(3, 'done', '✓ Recording complete');
+      setStep(4, 'active', 'Download recording and share with Claude');
 
-      drawViz();
+      // Basic stats
+      let peak = 0, rms = 0;
+      for (let i = 0; i < recSamples.length; i++) {
+        if (Math.abs(recSamples[i]) > peak) peak = Math.abs(recSamples[i]);
+        rms += recSamples[i] * recSamples[i];
+      }
+      rms = Math.sqrt(rms / recSamples.length);
+      const peakDb = peak > 0 ? (20*Math.log10(peak)).toFixed(1) : '-∞';
+      const rmsDb  = rms  > 0 ? (20*Math.log10(rms)).toFixed(1)  : '-∞';
+      log(`✓ Done!\nDuration: ${durSec}s  SR: ${recSampleRate}Hz\nPeak: ${peakDb}dB  RMS: ${rmsDb}dB\n\nDownload recorded.wav and share with Claude.`);
+
     } catch(err) {
-      setStatus('Error: ' + err.message);
-      console.error(err);
+      log('Error: ' + err.message);
     }
+
+    recording = false;
+    document.getElementById('recBtn').textContent = '⏺ RECORD AGAIN';
+    document.getElementById('recBtn').classList.remove('red');
+    document.getElementById('recBtn').disabled = false;
   }
 
-  function stop() {
-    if (procNode)    { procNode.disconnect();    procNode = null; }
-    if (sourceNode)  { sourceNode.disconnect();  sourceNode = null; }
-    if (outGainNode) { outGainNode.disconnect(); outGainNode = null; }
-    if (stream)      { stream.getTracks().forEach(t=>t.stop()); stream = null; }
-    if (audioCtx)    { audioCtx.close(); audioCtx = null; }
-    ringBuf = null; refBuf = null;
-    running = false; filled = false;
-    mainBtn.textContent = '▶ Start Listening';
-    mainBtn.classList.remove('active','stop');
-    statusDot.classList.remove('live');
-    setStatus('Idle — Click start to begin');
-    bufferFill.style.width = '0%';
-    bufferLabel.textContent = 'Buffer: 0.0s / 0.0s';
-    ctx2d.clearRect(0,0,canvas.width,canvas.height);
-    const dbgEl = document.getElementById('debugInfo');
-    if (dbgEl) dbgEl.textContent = '';
-  }
-
-  function setStatus(msg) { statusText.textContent = msg; }
-
-  function drawViz() {
-    if (!running || !analyser) return;
-    requestAnimationFrame(drawViz);
+  // ── Waveform drawing ──
+  function drawWave(id, data, color) {
+    const canvas = document.getElementById(id);
     const W = canvas.clientWidth * devicePixelRatio;
     const H = canvas.clientHeight * devicePixelRatio;
-    if (canvas.width !== W || canvas.height !== H) { canvas.width=W; canvas.height=H; }
-    const data = new Uint8Array(analyser.frequencyBinCount);
-    analyser.getByteTimeDomainData(data);
-    ctx2d.clearRect(0,0,W,H);
-    ctx2d.strokeStyle='rgba(0,255,170,0.8)';
-    ctx2d.lineWidth=1.5;
-    ctx2d.shadowColor='rgba(0,255,170,0.4)';
-    ctx2d.shadowBlur=6;
-    ctx2d.beginPath();
-    const sw=W/data.length; let x=0;
-    for(let i=0;i<data.length;i++){
-      const y=(data[i]/128.0)*(H/2);
-      if(i===0)ctx2d.moveTo(x,y);else ctx2d.lineTo(x,y);
-      x+=sw;
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0,0,W,H);
+    ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(0,H/2); ctx.lineTo(W,H/2); ctx.stroke();
+    ctx.strokeStyle = color; ctx.lineWidth=1;
+    ctx.beginPath();
+    const step = data.length / W;
+    for (let px=0; px<W; px++) {
+      let mn=0,mx=0;
+      const s=Math.floor(px*step), e=Math.floor((px+1)*step);
+      for (let i=s;i<e&&i<data.length;i++){if(data[i]<mn)mn=data[i];if(data[i]>mx)mx=data[i];}
+      const yT=(1-mx)/2*H, yB=(1-mn)/2*H;
+      if(px===0) ctx.moveTo(px,(yT+yB)/2);
+      ctx.lineTo(px,yT); ctx.lineTo(px,yB);
     }
-    ctx2d.stroke(); ctx2d.shadowBlur=0;
+    ctx.stroke();
   }
 
-  if ('serviceWorker' in navigator)
-    window.addEventListener('load', ()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
+  // ── WAV encoder ──
+  function downloadWav(samples, sr, filename) {
+    if (!samples) return;
+    const buf  = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buf);
+    const ws   = (o,s) => { for(let i=0;i<s.length;i++) view.setUint8(o+i,s.charCodeAt(i)); };
+    ws(0,'RIFF'); view.setUint32(4,36+samples.length*2,true);
+    ws(8,'WAVE'); ws(12,'fmt '); view.setUint32(16,16,true);
+    view.setUint16(20,1,true); view.setUint16(22,1,true);
+    view.setUint32(24,sr,true); view.setUint32(28,sr*2,true);
+    view.setUint16(32,2,true); view.setUint16(34,16,true);
+    ws(36,'data'); view.setUint32(40,samples.length*2,true);
+    for(let i=0;i<samples.length;i++){
+      const s=Math.max(-1,Math.min(1,samples[i]));
+      view.setInt16(44+i*2,s<0?s*0x8000:s*0x7FFF,true);
+    }
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([buf],{type:'audio/wav'}));
+    a.download=filename; a.click();
+  }
+
+  function log(msg) { document.getElementById('dbg').textContent = msg; }
+
+  function setStep(n, state, text) {
+    const num  = document.getElementById('s'+n);
+    const txt  = document.getElementById('st'+n);
+    num.className  = 'step-num '  + state;
+    txt.className  = 'step-text ' + state;
+    if (text) txt.textContent = text;
+  }
+
+  setStep(2, 'active', 'Set record duration above');
 </script>
 </body>
 </html>
