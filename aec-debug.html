@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AEC Debugger</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0d0d0d;
+    --panel: #141414;
+    --border: #222;
+    --green: #00ff88;
+    --yellow: #ffcc00;
+    --red: #ff4455;
+    --blue: #44aaff;
+    --dim: #555;
+    --text: #ccc;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 13px;
+    padding: 20px;
+    min-height: 100vh;
+  }
+  h1 { font-size: 18px; color: var(--green); letter-spacing: 0.2em; margin-bottom: 4px; }
+  .sub { color: var(--dim); font-size: 11px; letter-spacing: 0.15em; margin-bottom: 20px; }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 14px;
+  }
+  .panel-title {
+    font-size: 10px;
+    letter-spacing: 0.25em;
+    color: var(--dim);
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+
+  /* Signal type buttons */
+  .sig-btns { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .sig-btn {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--dim);
+    padding: 5px 10px;
+    border-radius: 2px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .sig-btn:hover { border-color: var(--green); color: var(--green); }
+  .sig-btn.active { border-color: var(--green); color: var(--green); background: rgba(0,255,136,0.07); }
+
+  /* Volume */
+  .row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .row label { color: var(--dim); font-size: 10px; letter-spacing: 0.15em; min-width: 80px; }
+  input[type=range] {
+    -webkit-appearance: none; flex: 1; height: 2px;
+    background: var(--border); outline: none; cursor: pointer;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 14px; height: 14px;
+    background: var(--green); border-radius: 50%;
+    box-shadow: 0 0 6px rgba(0,255,136,0.5);
+  }
+  .val { color: var(--green); min-width: 36px; text-align: right; font-size: 12px; }
+
+  /* Big buttons */
+  .btn {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 13px;
+    letter-spacing: 0.2em;
+    background: transparent;
+    border: 1px solid var(--green);
+    color: var(--green);
+    padding: 10px 18px;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: all 0.15s;
+    width: 100%;
+    margin-bottom: 8px;
+  }
+  .btn:hover { background: rgba(0,255,136,0.08); }
+  .btn:disabled { opacity: 0.3; cursor: not-allowed; }
+  .btn.recording { border-color: var(--red); color: var(--red); animation: blink 1s step-end infinite; }
+  .btn.playing { border-color: var(--yellow); color: var(--yellow); }
+  @keyframes blink { 50% { opacity: 0.4; } }
+
+  /* Canvas */
+  canvas {
+    width: 100%;
+    height: 120px;
+    display: block;
+    background: #0a0a0a;
+    border-radius: 2px;
+    margin-bottom: 8px;
+  }
+  .canvas-label { font-size: 9px; color: var(--dim); letter-spacing: 0.15em; margin-bottom: 4px; }
+
+  /* Results */
+  .results {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 14px;
+    margin-bottom: 12px;
+  }
+  .results-title { font-size: 10px; letter-spacing: 0.25em; color: var(--dim); margin-bottom: 12px; }
+  .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+  .metric {
+    background: #0a0a0a;
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    padding: 10px 12px;
+  }
+  .metric-label { font-size: 9px; color: var(--dim); letter-spacing: 0.2em; margin-bottom: 4px; }
+  .metric-value { font-size: 22px; color: var(--green); line-height: 1; }
+  .metric-value.warn { color: var(--yellow); }
+  .metric-value.bad  { color: var(--red); }
+  .metric-unit { font-size: 10px; color: var(--dim); margin-left: 2px; }
+
+  /* Log */
+  .log {
+    background: #080808;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 10px 12px;
+    height: 120px;
+    overflow-y: auto;
+    font-size: 11px;
+    line-height: 1.6;
+  }
+  .log-line { color: var(--dim); }
+  .log-line.info  { color: var(--text); }
+  .log-line.good  { color: var(--green); }
+  .log-line.warn  { color: var(--yellow); }
+  .log-line.error { color: var(--red); }
+
+  /* Download */
+  .dl-btn {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    background: transparent;
+    border: 1px solid var(--blue);
+    color: var(--blue);
+    padding: 7px 14px;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: all 0.15s;
+    margin-right: 8px;
+    margin-bottom: 8px;
+  }
+  .dl-btn:hover { background: rgba(68,170,255,0.08); }
+  .dl-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  .status-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex-shrink: 0; }
+  .dot.live { background: var(--red); box-shadow: 0 0 6px rgba(255,68,85,0.7); animation: blink 1s step-end infinite; }
+  .dot.ready { background: var(--green); box-shadow: 0 0 6px rgba(0,255,136,0.7); }
+  .dot.playing { background: var(--yellow); box-shadow: 0 0 6px rgba(255,204,0,0.7); }
+
+  .section-sep { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+</style>
+</head>
+<body>
+
+<h1>AEC DEBUGGER</h1>
+<div class="sub">Play a reference signal → record mic → analyse delay / gain / phase</div>
+
+<div class="grid">
+  <!-- LEFT: Playback config -->
+  <div class="panel">
+    <div class="panel-title">Reference Signal</div>
+    <div class="sig-btns">
+      <button class="sig-btn active" data-sig="sweep" onclick="setSig(this)">LOG SWEEP</button>
+      <button class="sig-btn" data-sig="white" onclick="setSig(this)">WHITE NOISE</button>
+      <button class="sig-btn" data-sig="pink" onclick="setSig(this)">PINK NOISE</button>
+      <button class="sig-btn" data-sig="sine1k" onclick="setSig(this)">1kHz SINE</button>
+      <button class="sig-btn" data-sig="pulse" onclick="setSig(this)">PULSE TRAIN</button>
+    </div>
+    <div class="row">
+      <label>Volume</label>
+      <input type="range" id="volSlider" min="0" max="100" value="70" oninput="document.getElementById('volVal').textContent=this.value+'%'">
+      <span class="val" id="volVal">70%</span>
+    </div>
+    <div class="row">
+      <label>Duration</label>
+      <input type="range" id="durSlider" min="1" max="10" step="0.5" value="3" oninput="document.getElementById('durVal').textContent=this.value+'s'">
+      <span class="val" id="durVal">3s</span>
+    </div>
+    <div class="row">
+      <label>Pre-delay</label>
+      <input type="range" id="preSlider" min="0" max="500" step="10" value="100" oninput="document.getElementById('preVal').textContent=this.value+'ms'">
+      <span class="val" id="preVal">100ms</span>
+    </div>
+  </div>
+
+  <!-- RIGHT: Controls -->
+  <div class="panel">
+    <div class="panel-title">Controls</div>
+    <div class="status-row">
+      <div class="dot" id="statusDot"></div>
+      <span id="statusText" style="font-size:11px;color:var(--dim)">Idle</span>
+    </div>
+    <button class="btn" id="runBtn" onclick="runCapture()">▶ PLAY + RECORD</button>
+    <button class="btn" id="analyseBtn" onclick="analyse()" disabled>⟳ ANALYSE</button>
+    <hr class="section-sep">
+    <div style="font-size:10px;color:var(--dim);margin-bottom:8px;">Export raw recordings:</div>
+    <button class="dl-btn" id="dlRef" onclick="downloadWav('ref')" disabled>↓ reference.wav</button>
+    <button class="dl-btn" id="dlMic" onclick="downloadWav('mic')" disabled>↓ recorded.wav</button>
+  </div>
+</div>
+
+<!-- Waveform displays -->
+<div class="panel" style="margin-bottom:12px;">
+  <div class="panel-title">Waveforms</div>
+  <div class="canvas-label">REFERENCE (played out)</div>
+  <canvas id="refCanvas"></canvas>
+  <div class="canvas-label">MIC RECORDING</div>
+  <canvas id="micCanvas"></canvas>
+  <div class="canvas-label">CROSS-CORRELATION (peak = actual delay)</div>
+  <canvas id="corrCanvas"></canvas>
+</div>
+
+<!-- Results -->
+<div class="results" id="resultsPanel" style="display:none">
+  <div class="results-title">ANALYSIS RESULTS</div>
+  <div class="metric-grid">
+    <div class="metric">
+      <div class="metric-label">ROUND-TRIP DELAY</div>
+      <div class="metric-value" id="rDelay">—</div>
+      <div class="metric-unit">ms</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">ONE-WAY (÷2)</div>
+      <div class="metric-value" id="rOneWay">—</div>
+      <div class="metric-unit">ms</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">ECHO GAIN</div>
+      <div class="metric-value" id="rGain">—</div>
+      <div class="metric-unit">dB</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">MIC SNR</div>
+      <div class="metric-value" id="rSNR">—</div>
+      <div class="metric-unit">dB</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">CORR PEAK</div>
+      <div class="metric-value" id="rCorr">—</div>
+      <div class="metric-unit"></div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">SAMPLE RATE</div>
+      <div class="metric-value" id="rSR" style="font-size:16px;">—</div>
+      <div class="metric-unit">Hz</div>
+    </div>
+  </div>
+  <div style="margin-top:12px;padding:10px;background:#0a0a0a;border:1px solid var(--border);border-radius:2px;font-size:11px;line-height:1.8;" id="recommendation"></div>
+</div>
+
+<!-- Log -->
+<div class="panel">
+  <div class="panel-title" style="margin-bottom:8px;">Log</div>
+  <div class="log" id="log"></div>
+</div>
+
+<script>
+  let audioCtx = null;
+  let micStream = null;
+  let refSamples = null;   // Float32Array — what we played
+  let micSamples = null;   // Float32Array — what mic captured
+  let sampleRate = 44100;
+
+  let currentSig = 'sweep';
+
+  const statusDot  = document.getElementById('statusDot');
+  const statusText = document.getElementById('statusText');
+  const runBtn     = document.getElementById('runBtn');
+  const analyseBtn = document.getElementById('analyseBtn');
+
+  function setSig(btn) {
+    document.querySelectorAll('.sig-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentSig = btn.dataset.sig;
+  }
+
+  function log(msg, cls='') {
+    const el = document.getElementById('log');
+    const line = document.createElement('div');
+    line.className = 'log-line ' + cls;
+    line.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+    el.appendChild(line);
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function setStatus(msg, dotClass='') {
+    statusText.textContent = msg;
+    statusDot.className = 'dot ' + dotClass;
+  }
+
+  // ── Signal generators ────────────────────────────────────────────────────────
+
+  function generateSignal(type, numSamples, sr) {
+    const buf = new Float32Array(numSamples);
+    switch (type) {
+      case 'sweep': {
+        // Log-frequency sweep 20Hz → 20kHz
+        const f0 = 20, f1 = 20000;
+        const k = Math.pow(f1/f0, 1/numSamples);
+        let phase = 0;
+        for (let i = 0; i < numSamples; i++) {
+          const freq = f0 * Math.pow(k, i);
+          phase += 2 * Math.PI * freq / sr;
+          // Hann envelope
+          const env = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / numSamples);
+          buf[i] = env * Math.sin(phase);
+        }
+        break;
+      }
+      case 'white': {
+        for (let i = 0; i < numSamples; i++) buf[i] = (Math.random() * 2 - 1);
+        break;
+      }
+      case 'pink': {
+        // Paul Kellet's pink noise approximation
+        let b0=0,b1=0,b2=0,b3=0,b4=0,b5=0,b6=0;
+        for (let i = 0; i < numSamples; i++) {
+          const w = Math.random() * 2 - 1;
+          b0=0.99886*b0+w*0.0555179; b1=0.99332*b1+w*0.0750759;
+          b2=0.96900*b2+w*0.1538520; b3=0.86650*b3+w*0.3104856;
+          b4=0.55000*b4+w*0.5329522; b5=-0.7616*b5-w*0.0168980;
+          buf[i] = (b0+b1+b2+b3+b4+b5+b6+w*0.5362) / 5.5;
+          b6 = w * 0.115926;
+        }
+        break;
+      }
+      case 'sine1k': {
+        for (let i = 0; i < numSamples; i++) {
+          const env = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / numSamples);
+          buf[i] = env * Math.sin(2 * Math.PI * 1000 * i / sr);
+        }
+        break;
+      }
+      case 'pulse': {
+        // MLS-like pulse train — good for impulse response measurement
+        const period = Math.floor(sr * 0.02); // 20ms
+        for (let i = 0; i < numSamples; i++) {
+          const env = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / numSamples);
+          buf[i] = (i % period < 2) ? env : 0;
+        }
+        break;
+      }
+    }
+    return buf;
+  }
+
+  // ── Capture ──────────────────────────────────────────────────────────────────
+
+  async function runCapture() {
+    runBtn.disabled = true;
+    analyseBtn.disabled = true;
+    document.getElementById('dlRef').disabled = true;
+    document.getElementById('dlMic').disabled = true;
+    document.getElementById('resultsPanel').style.display = 'none';
+
+    try {
+      log('Requesting microphone...', 'info');
+      setStatus('Opening mic...', '');
+
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+        video: false
+      });
+
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      sampleRate = audioCtx.sampleRate;
+      log('Sample rate: ' + sampleRate + ' Hz', 'info');
+
+      const durSec   = parseFloat(document.getElementById('durSlider').value);
+      const preMs    = parseInt(document.getElementById('preSlider').value);
+      const vol      = parseInt(document.getElementById('volSlider').value) / 100;
+
+      const preSamples  = Math.floor(preMs / 1000 * sampleRate);
+      const sigSamples  = Math.floor(durSec * sampleRate);
+      // Record pre + signal + 500ms tail to catch late echoes
+      const totalRecord = preSamples + sigSamples + Math.floor(0.5 * sampleRate);
+
+      log(`Generating ${currentSig} signal (${durSec}s)...`, 'info');
+      const sigData = generateSignal(currentSig, sigSamples, sampleRate);
+
+      // Build full playback buffer (silence prefix + signal)
+      const playBuf = audioCtx.createBuffer(1, preSamples + sigSamples, sampleRate);
+      const playData = playBuf.getChannelData(0);
+      for (let i = 0; i < sigSamples; i++) playData[preSamples + i] = sigData[i] * vol;
+
+      // Record mic
+      const micRecording = new Float32Array(totalRecord);
+      let micPos = 0;
+
+      const micSource = audioCtx.createMediaStreamSource(micStream);
+      const recorder  = audioCtx.createScriptProcessor(1024, 1, 1);
+      const silentOut = audioCtx.createGain();
+      silentOut.gain.value = 0;
+      micSource.connect(recorder);
+      recorder.connect(silentOut);
+      silentOut.connect(audioCtx.destination);
+
+      recorder.onaudioprocess = (e) => {
+        const data = e.inputBuffer.getChannelData(0);
+        for (let i = 0; i < data.length && micPos < totalRecord; i++) {
+          micRecording[micPos++] = data[i];
+        }
+      };
+
+      // Play signal
+      const playNode = audioCtx.createBufferSource();
+      playNode.buffer = playBuf;
+      const gainNode = audioCtx.createGain();
+      gainNode.gain.value = 1;
+      playNode.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+
+      log('Playing signal + recording...', 'info');
+      setStatus('Playing + recording...', 'playing');
+      runBtn.classList.add('playing');
+
+      playNode.start(audioCtx.currentTime);
+
+      await new Promise(res => setTimeout(res, (preSamples + sigSamples) / sampleRate * 1000 + 600));
+
+      recorder.disconnect();
+      micSource.disconnect();
+      micStream.getTracks().forEach(t => t.stop());
+      audioCtx.close();
+
+      // Store: refSamples is just the signal part (no pre-silence)
+      // micSamples is the full recording (pre-silence + signal + tail)
+      refSamples = sigData;
+      micSamples = micRecording;
+
+      log('Capture complete. ref=' + refSamples.length + ' mic=' + micSamples.length + ' samples', 'good');
+      setStatus('Capture done', 'ready');
+      runBtn.classList.remove('playing');
+      runBtn.disabled = false;
+      analyseBtn.disabled = false;
+      document.getElementById('dlRef').disabled = false;
+      document.getElementById('dlMic').disabled = false;
+
+      drawWaveform('refCanvas', refSamples, getComputedStyle(document.documentElement).getPropertyValue('--green').trim());
+      drawWaveform('micCanvas', micSamples, getComputedStyle(document.documentElement).getPropertyValue('--blue').trim());
+
+      log('Click Analyse to compute delay/gain metrics.', 'info');
+
+    } catch (err) {
+      log('Error: ' + err.message, 'error');
+      setStatus('Error', '');
+      runBtn.disabled = false;
+      runBtn.classList.remove('playing', 'recording');
+    }
+  }
+
+  // ── Analysis ─────────────────────────────────────────────────────────────────
+
+  function analyse() {
+    if (!refSamples || !micSamples) return;
+    log('Running cross-correlation...', 'info');
+
+    const ref = refSamples;
+    const mic = micSamples;
+
+    // Cross-correlate ref against mic to find where ref appears in mic.
+    // We search lags 0..maxLag. The peak lag = round-trip delay in samples.
+    const maxLagMs  = 500;
+    const maxLag    = Math.floor(maxLagMs / 1000 * sampleRate);
+    const corrLen   = Math.min(maxLag, mic.length - ref.length);
+    const corr      = new Float32Array(corrLen);
+
+    // Normalise ref power
+    let refPow = 0;
+    for (let i = 0; i < ref.length; i++) refPow += ref[i] * ref[i];
+    const refRms = Math.sqrt(refPow / ref.length);
+
+    for (let lag = 0; lag < corrLen; lag++) {
+      let dot = 0, micPow = 0;
+      for (let j = 0; j < ref.length && (lag + j) < mic.length; j++) {
+        dot    += ref[j] * mic[lag + j];
+        micPow += mic[lag + j] * mic[lag + j];
+      }
+      // Normalised cross-correlation coefficient
+      const micRms = Math.sqrt(micPow / ref.length);
+      corr[lag] = (refRms > 0 && micRms > 0) ? dot / (ref.length * refRms * micRms) : 0;
+    }
+
+    // Find peak
+    let peakLag = 0, peakVal = -Infinity;
+    for (let i = 0; i < corr.length; i++) {
+      if (corr[i] > peakVal) { peakVal = corr[i]; peakLag = i; }
+    }
+
+    const roundTripMs = (peakLag / sampleRate) * 1000;
+    const oneWayMs    = roundTripMs / 2;
+
+    // Echo gain: ratio of mic amplitude at peak to ref amplitude
+    let micEnergy = 0, refEnergy = 0;
+    for (let j = 0; j < ref.length && (peakLag + j) < mic.length; j++) {
+      micEnergy += mic[peakLag + j] * mic[peakLag + j];
+      refEnergy += ref[j] * ref[j];
+    }
+    const gainLinear = refEnergy > 0 ? Math.sqrt(micEnergy / refEnergy) : 0;
+    const gainDb     = gainLinear > 0 ? 20 * Math.log10(gainLinear) : -Infinity;
+
+    // SNR: signal power at peak vs noise floor (first 50ms of mic before any signal)
+    const noiseSamples = Math.min(Math.floor(0.05 * sampleRate), peakLag);
+    let noisePow = 0;
+    for (let i = 0; i < noiseSamples; i++) noisePow += mic[i] * mic[i];
+    const noiseRms  = noiseSamples > 0 ? Math.sqrt(noisePow / noiseSamples) : 0;
+    const micRmsAtPeak = Math.sqrt(micEnergy / ref.length);
+    const snrDb = (noiseRms > 0 && micRmsAtPeak > 0) ? 20 * Math.log10(micRmsAtPeak / noiseRms) : 0;
+
+    // Display
+    drawCorrelation('corrCanvas', corr, peakLag);
+
+    const fmt1 = v => isFinite(v) ? v.toFixed(1) : '—';
+
+    el('rDelay').textContent  = fmt1(roundTripMs);
+    el('rOneWay').textContent = fmt1(oneWayMs);
+    el('rGain').textContent   = fmt1(gainDb);
+    el('rSNR').textContent    = fmt1(snrDb);
+    el('rCorr').textContent   = peakVal.toFixed(3);
+    el('rSR').textContent     = sampleRate;
+
+    // Colour code
+    colourMetric('rDelay',  roundTripMs, 300, 600);
+    colourMetric('rGain',   gainDb,      -30, -10);
+    colourMetric('rSNR',    snrDb,       6,   12);
+    colourMetric('rCorr',   peakVal,     0.1, 0.3);
+
+    // Recommendation
+    let rec = '';
+    if (peakVal < 0.05) {
+      rec = '⚠ Correlation too low — mic may not be picking up the speaker. Try increasing volume or moving mic closer.';
+    } else {
+      rec = `✓ Set Speaker Latency slider to ${Math.round(oneWayMs)}ms in Echo Chamber.\n`;
+      if (gainDb < -40) rec += '⚠ Echo gain is very low — AEC may not need to do much work, check mic placement.\n';
+      if (gainDb > -6)  rec += '⚠ Echo gain is high (${fmt1(gainDb)}dB) — speaker volume is very loud relative to mic. Turn down output volume.\n';
+      if (snrDb < 6)    rec += '⚠ Low SNR — too much background noise. Find a quieter environment.\n';
+      if (snrDb > 20)   rec += '✓ Good SNR — clean capture environment.\n';
+    }
+    el('recommendation').style.whiteSpace = 'pre-wrap';
+    el('recommendation').textContent = rec;
+    document.getElementById('resultsPanel').style.display = 'block';
+
+    log(`Round-trip: ${fmt1(roundTripMs)}ms | One-way: ${fmt1(oneWayMs)}ms | Gain: ${fmt1(gainDb)}dB | SNR: ${fmt1(snrDb)}dB | Corr: ${peakVal.toFixed(3)}`, 'good');
+  }
+
+  function el(id) { return document.getElementById(id); }
+
+  function colourMetric(id, val, warnThresh, goodThresh) {
+    const el = document.getElementById(id);
+    el.className = 'metric-value';
+    if (!isFinite(val)) return;
+    // For SNR and corr: higher is better. For delay and gain: no blanket rule, just flag.
+    if (id === 'rSNR' || id === 'rCorr') {
+      if (val < warnThresh) el.classList.add('bad');
+      else if (val < goodThresh) el.classList.add('warn');
+    }
+  }
+
+  // ── Drawing ──────────────────────────────────────────────────────────────────
+
+  function drawWaveform(canvasId, data, colour) {
+    const canvas = document.getElementById(canvasId);
+    const W = canvas.clientWidth * devicePixelRatio;
+    const H = canvas.clientHeight * devicePixelRatio;
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, W, H);
+
+    // Centre line
+    ctx.strokeStyle = '#1a1a1a';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, H/2); ctx.lineTo(W, H/2); ctx.stroke();
+
+    ctx.strokeStyle = colour || '#00ff88';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const step = data.length / W;
+    for (let px = 0; px < W; px++) {
+      const start = Math.floor(px * step);
+      const end   = Math.floor((px + 1) * step);
+      let mn = 0, mx = 0;
+      for (let i = start; i < end && i < data.length; i++) {
+        if (data[i] < mn) mn = data[i];
+        if (data[i] > mx) mx = data[i];
+      }
+      const yTop = (1 - mx) / 2 * H;
+      const yBot = (1 - mn) / 2 * H;
+      if (px === 0) ctx.moveTo(px, (yTop + yBot) / 2);
+      ctx.lineTo(px, yTop);
+      ctx.lineTo(px, yBot);
+    }
+    ctx.stroke();
+  }
+
+  function drawCorrelation(canvasId, corr, peakLag) {
+    const canvas = document.getElementById(canvasId);
+    const W = canvas.clientWidth * devicePixelRatio;
+    const H = canvas.clientHeight * devicePixelRatio;
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, W, H);
+
+    // Find range
+    let mn = 0, mx = 0;
+    for (let i = 0; i < corr.length; i++) {
+      if (corr[i] < mn) mn = corr[i];
+      if (corr[i] > mx) mx = corr[i];
+    }
+    const range = Math.max(Math.abs(mn), Math.abs(mx)) || 1;
+
+    ctx.strokeStyle = '#222';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, H/2); ctx.lineTo(W, H/2); ctx.stroke();
+
+    // Draw correlation
+    ctx.strokeStyle = '#44aaff';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let px = 0; px < W; px++) {
+      const idx = Math.floor(px / W * corr.length);
+      const y = H/2 - (corr[idx] / range) * (H/2 * 0.85);
+      if (px === 0) ctx.moveTo(px, y); else ctx.lineTo(px, y);
+    }
+    ctx.stroke();
+
+    // Peak marker
+    const peakX = (peakLag / corr.length) * W;
+    ctx.strokeStyle = '#ffcc00';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(peakX, 0); ctx.lineTo(peakX, H); ctx.stroke();
+    ctx.setLineDash([]);
+
+    const peakMs = (peakLag / sampleRate * 1000).toFixed(1);
+    ctx.fillStyle = '#ffcc00';
+    ctx.font = `${Math.floor(10 * devicePixelRatio)}px Share Tech Mono, monospace`;
+    ctx.fillText(`peak: ${peakMs}ms`, peakX + 4, 16 * devicePixelRatio);
+  }
+
+  // ── WAV export ───────────────────────────────────────────────────────────────
+
+  function downloadWav(which) {
+    const data = which === 'ref' ? refSamples : micSamples;
+    if (!data) return;
+    const wav = encodeWav(data, sampleRate);
+    const blob = new Blob([wav], { type: 'audio/wav' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = which === 'ref' ? 'reference.wav' : 'recorded.wav';
+    a.click();
+    log(`Downloaded ${a.download}`, 'info');
+  }
+
+  function encodeWav(samples, sr) {
+    const buf = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buf);
+    const writeStr = (offset, str) => { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)); };
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + samples.length * 2, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);  // PCM
+    view.setUint16(22, 1, true);  // mono
+    view.setUint32(24, sr, true);
+    view.setUint32(28, sr * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeStr(36, 'data');
+    view.setUint32(40, samples.length * 2, true);
+    for (let i = 0; i < samples.length; i++) {
+      const s = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+    return buf;
+  }
+
+  log('Ready. Configure signal above then click Play + Record.', 'info');
+</script>
+</body>
+</html>
