@@ -393,16 +393,21 @@
 </div>
 
 <script>
-  let audioCtx = null;
-  let sourceNode = null;
-  let workletNode = null;
-  let analyser = null;
-  let stream = null;
-  let running = false;
-  let filled = false;
+  let audioCtx    = null;
+  let sourceNode  = null;
+  let procNode    = null;   // ScriptProcessor or AudioWorkletNode
+  let outGainNode = null;
+  let analyser    = null;
+  let stream      = null;
+  let running     = false;
+  let filled      = false;
   let bufferSamples = 0;
 
-  // AudioWorklet code as blob — runs on dedicated audio thread, glitch-free
+  // Ring buffer (lives in main thread for ScriptProcessor path)
+  let ringBuf = null;
+  let wPos = 0, rPos = 0;
+
+  // AudioWorklet code — used if browser supports blob worklets
   const WORKLET_CODE = `
 class DelayProcessor extends AudioWorkletProcessor {
   static get parameterDescriptors() { return [
@@ -410,17 +415,13 @@ class DelayProcessor extends AudioWorkletProcessor {
   ]; }
   constructor() {
     super();
-    // Pre-allocate max 10s at 48kHz
     this._buf  = new Float32Array(480001);
-    this._size = 480001;
-    this._w = 0; this._r = 0; this._filled = false;
-    this._frameCount = 0;
+    this._w = 0; this._r = 0; this._filled = false; this._fc = 0;
   }
   process(inputs, outputs, params) {
-    const inp = inputs[0]?.[0];
-    const out = outputs[0]?.[0];
+    const inp = inputs[0]?.[0], out = outputs[0]?.[0];
     if (!inp || !out) return true;
-    const delay = Math.max(480, Math.min(Math.round(params.delaySamples[0]), this._size - 1));
+    const delay = Math.max(480, Math.min(Math.round(params.delaySamples[0]), 480000));
     for (let i = 0; i < inp.length; i++) {
       this._buf[this._w] = inp[i];
       this._w = (this._w + 1) % delay;
@@ -428,15 +429,13 @@ class DelayProcessor extends AudioWorkletProcessor {
       out[i] = this._filled ? this._buf[this._r] : 0;
       this._r = (this._r + 1) % delay;
     }
-    this._frameCount++;
-    if (this._frameCount % 16 === 0) {
+    if (++this._fc % 16 === 0)
       this.port.postMessage({ filled: this._filled, w: this._w, delay });
-    }
     return true;
   }
 }
 registerProcessor('delay-processor', DelayProcessor);
-\`;
+`;
 
   const delaySlider   = document.getElementById('delaySlider');
   const volumeSlider  = document.getElementById('volumeSlider');
@@ -454,9 +453,7 @@ registerProcessor('delay-processor', DelayProcessor);
   const canvas        = document.getElementById('viz');
   const ctx2d         = canvas.getContext('2d');
 
-  function setSliderFill(slider, pct) {
-    slider.style.setProperty('--fill', pct + '%');
-  }
+  function setSliderFill(s, pct) { s.style.setProperty('--fill', pct + '%'); }
   function getLatencyMs() { return parseInt(latencySlider.value); }
 
   setSliderFill(delaySlider,   ((1.0 - 0.1) / (10 - 0.1)) * 100);
@@ -467,10 +464,9 @@ registerProcessor('delay-processor', DelayProcessor);
     const v = parseFloat(delaySlider.value);
     delayVal.textContent = v.toFixed(1);
     setSliderFill(delaySlider, ((v - 0.1) / (10 - 0.1)) * 100);
-    if (workletNode && audioCtx) {
-      workletNode.parameters.get('delaySamples').setTargetAtTime(
-        Math.floor(v * audioCtx.sampleRate), audioCtx.currentTime, 0.05
-      );
+    if (audioCtx && procNode?.parameters) {
+      procNode.parameters.get('delaySamples')
+        .setTargetAtTime(Math.floor(v * audioCtx.sampleRate), audioCtx.currentTime, 0.05);
     }
   });
 
@@ -478,7 +474,7 @@ registerProcessor('delay-processor', DelayProcessor);
     const v = parseInt(volumeSlider.value);
     volVal.textContent = v;
     setSliderFill(volumeSlider, v);
-    if (workletNode) workletNode.gain.value = v / 100;
+    if (outGainNode) outGainNode.gain.setTargetAtTime(v / 100, audioCtx.currentTime, 0.05);
   });
 
   latencySlider.addEventListener('input', () => {
@@ -488,12 +484,8 @@ registerProcessor('delay-processor', DelayProcessor);
     latencyNote.textContent = 'Manually set.';
   });
 
-  // Latency detection (standalone — separate from main engine)
+  // ── Latency detection ──
   let detecting = false;
-  const DETECT_FREQ = 18500;
-  const DETECT_CHIRP_MS = 40;
-  const DETECT_LISTEN_MS = 500;
-
   async function runLatencyDetection() {
     if (detecting) return;
     detecting = true;
@@ -503,126 +495,125 @@ registerProcessor('delay-processor', DelayProcessor);
     latencyNote.textContent = 'Playing probe tone... keep quiet.';
     try {
       const ds = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }, video: false
-      });
-      const dc = new (window.AudioContext || window.webkitAudioContext)();
+        audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false},video:false});
+      const dc = new AudioContext();
       const sr = dc.sampleRate;
-      const chirpN  = Math.floor(DETECT_CHIRP_MS / 1000 * sr);
-      const listenN = Math.floor(DETECT_LISTEN_MS / 1000 * sr);
-      const chirpBuf = dc.createBuffer(1, chirpN, sr);
-      const cd = chirpBuf.getChannelData(0);
-      for (let i = 0; i < chirpN; i++) {
-        const env = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / chirpN);
-        cd[i] = env * Math.sin(2 * Math.PI * DETECT_FREQ * i / sr);
+      const chirpN = Math.floor(40/1000*sr), listenN = Math.floor(500/1000*sr);
+      const cb = dc.createBuffer(1, chirpN, sr);
+      const cd = cb.getChannelData(0);
+      for (let i=0;i<chirpN;i++){const e=0.5-0.5*Math.cos(2*Math.PI*i/chirpN);cd[i]=e*Math.sin(2*Math.PI*18500*i/sr);}
+      const rec=new Float32Array(listenN); let rp=0;
+      const ms=dc.createMediaStreamSource(ds),sp=dc.createScriptProcessor(512,1,1),sg=dc.createGain();
+      sg.gain.value=0; ms.connect(sp);sp.connect(sg);sg.connect(dc.destination);
+      sp.onaudioprocess=(e)=>{const d=e.inputBuffer.getChannelData(0);for(let i=0;i<d.length&&rp<listenN;i++)rec[rp++]=d[i];};
+      const cs=dc.createBufferSource(),cg=dc.createGain();cg.gain.value=0.6;
+      cs.buffer=cb;cs.connect(cg);cg.connect(dc.destination);cs.start();
+      await new Promise(r=>setTimeout(r,580));
+      sp.disconnect();ms.disconnect();ds.getTracks().forEach(t=>t.stop());dc.close();
+      let refPow=0;for(let i=0;i<chirpN;i++)refPow+=cd[i]*cd[i];
+      const refRms=Math.sqrt(refPow/chirpN)||1;
+      let bestLag=Math.floor(5/1000*sr),bestScore=-Infinity;
+      for(let lag=bestLag;lag<Math.floor(400/1000*sr)&&lag+chirpN<listenN;lag++){
+        let dot=0,mp=0;for(let j=0;j<chirpN;j++){dot+=cd[j]*rec[lag+j];mp+=rec[lag+j]*rec[lag+j];}
+        const score=dot/(chirpN*refRms*(Math.sqrt(mp/chirpN)||1));
+        if(score>bestScore){bestScore=score;bestLag=lag;}
       }
-      const rec = new Float32Array(listenN);
-      let rp = 0;
-      const ms = dc.createMediaStreamSource(ds);
-      const sp = dc.createScriptProcessor(512, 1, 1);
-      const sg = dc.createGain(); sg.gain.value = 0;
-      ms.connect(sp); sp.connect(sg); sg.connect(dc.destination);
-      sp.onaudioprocess = (e) => {
-        const d = e.inputBuffer.getChannelData(0);
-        for (let i = 0; i < d.length && rp < listenN; i++) rec[rp++] = d[i];
-      };
-      const cs = dc.createBufferSource();
-      cs.buffer = chirpBuf;
-      const cg = dc.createGain(); cg.gain.value = 0.6;
-      cs.connect(cg); cg.connect(dc.destination);
-      cs.start(dc.currentTime);
-      await new Promise(res => setTimeout(res, DETECT_LISTEN_MS + 80));
-      sp.disconnect(); ms.disconnect(); ds.getTracks().forEach(t => t.stop()); dc.close();
-      const maxLag = Math.floor(400 / 1000 * sr);
-      const minLag = Math.floor(5   / 1000 * sr);
-      let bestLag = minLag, bestScore = -Infinity;
-      let refPow = 0;
-      for (let i = 0; i < chirpN; i++) refPow += cd[i] * cd[i];
-      const refRms = Math.sqrt(refPow / chirpN) || 1;
-      for (let lag = minLag; lag < maxLag && lag + chirpN < listenN; lag++) {
-        let dot = 0, mp = 0;
-        for (let j = 0; j < chirpN; j++) { dot += cd[j] * rec[lag+j]; mp += rec[lag+j]*rec[lag+j]; }
-        const score = dot / (chirpN * refRms * (Math.sqrt(mp/chirpN)||1));
-        if (score > bestScore) { bestScore = score; bestLag = lag; }
-      }
-      const oneWayMs = Math.round((bestLag / sr) * 500);
-      if (bestScore > 0.04 && oneWayMs >= 5 && oneWayMs <= 350) {
-        const c = Math.max(5, Math.min(300, oneWayMs));
-        latencySlider.value = c; latencyVal.textContent = c;
-        setSliderFill(latencySlider, ((c-5)/(300-5))*100);
-        latencyNote.textContent = `✓ Detected ${c}ms one-way (score: ${bestScore.toFixed(3)})`;
+      const oneWayMs=Math.round((bestLag/sr)*500);
+      if(bestScore>0.04&&oneWayMs>=5&&oneWayMs<=350){
+        const c=Math.max(5,Math.min(300,oneWayMs));
+        latencySlider.value=c;latencyVal.textContent=c;
+        setSliderFill(latencySlider,((c-5)/(300-5))*100);
+        latencyNote.textContent=`✓ Detected ${c}ms (score: ${bestScore.toFixed(3)})`;
       } else {
-        latencyNote.textContent = `⚠ Uncertain (score: ${bestScore.toFixed(3)}) — using ${getLatencyMs()}ms`;
+        latencyNote.textContent=`⚠ Uncertain (score: ${bestScore.toFixed(3)}) — using ${getLatencyMs()}ms`;
       }
-    } catch(err) {
-      latencyNote.textContent = '⚠ Failed: ' + err.message;
-    }
-    detectBtn.textContent = '⟳ DETECT';
-    detectBtn.style.color = ''; detectBtn.style.borderColor = '';
-    detecting = false;
+    } catch(e){ latencyNote.textContent='⚠ Failed: '+e.message; }
+    detectBtn.textContent='⟳ DETECT';
+    detectBtn.style.color='';detectBtn.style.borderColor='';
+    detecting=false;
   }
 
-  async function toggle() {
-    if (!running) await start(); else stop();
+  // ── Progress update (ScriptProcessor path) ──
+  function updateProgress(w, delay, sr) {
+    if (filled) {
+      bufferFill.style.width = '100%';
+      const d = parseFloat(delaySlider.value);
+      bufferLabel.textContent = `Buffer: ${d.toFixed(1)}s / ${d.toFixed(1)}s`;
+    } else {
+      bufferFill.style.width = ((w / delay) * 100) + '%';
+      bufferLabel.textContent = `Buffer: ${(w/sr).toFixed(1)}s / ${(delay/sr).toFixed(1)}s`;
+    }
   }
+
+  async function toggle() { if (!running) await start(); else stop(); }
 
   async function start() {
     try {
       setStatus('Requesting microphone...');
       stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-        video: false
-      });
+        audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false},video:false});
 
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      audioCtx = new AudioContext();
       const sr = audioCtx.sampleRate;
-      const delaySec = parseFloat(delaySlider.value);
+      bufferSamples = Math.floor(parseFloat(delaySlider.value) * sr);
       const vol = parseInt(volumeSlider.value) / 100;
-      bufferSamples = Math.floor(delaySec * sr);
 
-      // Load worklet from blob
-      const blob = new Blob([WORKLET_CODE], { type: 'application/javascript' });
-      const blobUrl = URL.createObjectURL(blob);
-      await audioCtx.audioWorklet.addModule(blobUrl);
-      URL.revokeObjectURL(blobUrl);
-
-      sourceNode = audioCtx.createMediaStreamSource(stream);
-      analyser   = audioCtx.createAnalyser();
+      sourceNode  = audioCtx.createMediaStreamSource(stream);
+      analyser    = audioCtx.createAnalyser();
       analyser.fftSize = 256;
-
-      workletNode = new AudioWorkletNode(audioCtx, 'delay-processor', {
-        numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1]
-      });
-      workletNode.parameters.get('delaySamples').value = bufferSamples;
-
-      // Volume via worklet output gain
-      const outGain = audioCtx.createGain();
-      outGain.gain.value = vol;
-      // Expose so volume slider can update it
-      workletNode.gain = outGain.gain;
-
-      workletNode.port.onmessage = (e) => {
-        filled = e.data.filled;
-        if (!filled && e.data.w !== undefined) {
-          const pct = (e.data.w / e.data.delay) * 100;
-          bufferFill.style.width = pct + '%';
-          const sec = e.data.w / sr;
-          bufferLabel.textContent = `Buffer: ${sec.toFixed(1)}s / ${delaySec.toFixed(1)}s`;
-        } else if (filled) {
-          bufferFill.style.width = '100%';
-          bufferLabel.textContent = `Buffer: ${delaySec.toFixed(1)}s / ${delaySec.toFixed(1)}s`;
-        }
-      };
+      outGainNode = audioCtx.createGain();
+      outGainNode.gain.value = vol;
 
       sourceNode.connect(analyser);
-      sourceNode.connect(workletNode);
-      workletNode.connect(outGain);
-      outGain.connect(audioCtx.destination);
+
+      // Try AudioWorklet first, fall back to ScriptProcessor
+      let useWorklet = false;
+      try {
+        const blob    = new Blob([WORKLET_CODE], {type:'application/javascript'});
+        const blobUrl = URL.createObjectURL(blob);
+        await audioCtx.audioWorklet.addModule(blobUrl);
+        URL.revokeObjectURL(blobUrl);
+        useWorklet = true;
+      } catch(e) { console.warn('AudioWorklet unavailable, using ScriptProcessor:', e); }
+
+      if (useWorklet) {
+        procNode = new AudioWorkletNode(audioCtx, 'delay-processor',
+          {numberOfInputs:1, numberOfOutputs:1, outputChannelCount:[1]});
+        procNode.parameters.get('delaySamples').value = bufferSamples;
+        procNode.port.onmessage = (e) => {
+          filled = e.data.filled;
+          updateProgress(e.data.w, e.data.delay, sr);
+        };
+        sourceNode.connect(procNode);
+        procNode.connect(outGainNode);
+      } else {
+        // ScriptProcessor fallback — use smallest buffer to minimise glitches
+        ringBuf = new Float32Array(bufferSamples);
+        wPos = 0; rPos = 0; filled = false;
+        procNode = audioCtx.createScriptProcessor(256, 1, 1);
+        procNode.onaudioprocess = (e) => {
+          const inp = e.inputBuffer.getChannelData(0);
+          const out = e.outputBuffer.getChannelData(0);
+          for (let i = 0; i < inp.length; i++) {
+            ringBuf[wPos] = inp[i];
+            wPos = (wPos + 1) % bufferSamples;
+            if (!filled && wPos === 0) filled = true;
+            out[i] = filled ? ringBuf[rPos] : 0;
+            rPos = (rPos + 1) % bufferSamples;
+          }
+          updateProgress(wPos, bufferSamples, sr);
+        };
+        sourceNode.connect(procNode);
+        procNode.connect(outGainNode);
+      }
+
+      outGainNode.connect(audioCtx.destination);
 
       running = true;
       mainBtn.textContent = '■ Stop';
       mainBtn.classList.add('active', 'stop');
       statusDot.classList.add('live');
-      setStatus('Live');
+      setStatus('Live' + (useWorklet ? '' : ' (compat mode)'));
       drawViz();
     } catch(err) {
       setStatus('Error: ' + err.message);
@@ -631,18 +622,19 @@ registerProcessor('delay-processor', DelayProcessor);
   }
 
   function stop() {
-    if (workletNode)  { workletNode.disconnect();  workletNode = null; }
-    if (sourceNode)   { sourceNode.disconnect();   sourceNode = null; }
-    if (stream)       { stream.getTracks().forEach(t => t.stop()); stream = null; }
-    if (audioCtx)     { audioCtx.close();          audioCtx = null; }
-    running = false; filled = false;
+    if (procNode)    { procNode.disconnect();    procNode = null; }
+    if (sourceNode)  { sourceNode.disconnect();  sourceNode = null; }
+    if (outGainNode) { outGainNode.disconnect(); outGainNode = null; }
+    if (stream)      { stream.getTracks().forEach(t=>t.stop()); stream = null; }
+    if (audioCtx)   { audioCtx.close(); audioCtx = null; }
+    ringBuf = null; running = false; filled = false;
     mainBtn.textContent = '▶ Start Listening';
-    mainBtn.classList.remove('active', 'stop');
+    mainBtn.classList.remove('active','stop');
     statusDot.classList.remove('live');
     setStatus('Idle — Click start to begin');
     bufferFill.style.width = '0%';
     bufferLabel.textContent = 'Buffer: 0.0s / 0.0s';
-    ctx2d.clearRect(0, 0, canvas.width, canvas.height);
+    ctx2d.clearRect(0,0,canvas.width,canvas.height);
   }
 
   function setStatus(msg) { statusText.textContent = msg; }
@@ -650,33 +642,28 @@ registerProcessor('delay-processor', DelayProcessor);
   function drawViz() {
     if (!running || !analyser) return;
     requestAnimationFrame(drawViz);
-    const W = canvas.clientWidth * window.devicePixelRatio;
-    const H = canvas.clientHeight * window.devicePixelRatio;
-    if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+    const W = canvas.clientWidth * devicePixelRatio;
+    const H = canvas.clientHeight * devicePixelRatio;
+    if (canvas.width !== W || canvas.height !== H) { canvas.width=W; canvas.height=H; }
     const data = new Uint8Array(analyser.frequencyBinCount);
     analyser.getByteTimeDomainData(data);
-    ctx2d.clearRect(0, 0, W, H);
-    ctx2d.strokeStyle = 'rgba(0,255,170,0.8)';
-    ctx2d.lineWidth = 1.5;
-    ctx2d.shadowColor = 'rgba(0,255,170,0.4)';
-    ctx2d.shadowBlur = 6;
+    ctx2d.clearRect(0,0,W,H);
+    ctx2d.strokeStyle='rgba(0,255,170,0.8)';
+    ctx2d.lineWidth=1.5;
+    ctx2d.shadowColor='rgba(0,255,170,0.4)';
+    ctx2d.shadowBlur=6;
     ctx2d.beginPath();
-    const sliceW = W / data.length;
-    let x = 0;
-    for (let i = 0; i < data.length; i++) {
-      const y = (data[i] / 128.0) * (H / 2);
-      if (i === 0) ctx2d.moveTo(x, y); else ctx2d.lineTo(x, y);
-      x += sliceW;
+    const sw=W/data.length; let x=0;
+    for(let i=0;i<data.length;i++){
+      const y=(data[i]/128.0)*(H/2);
+      if(i===0)ctx2d.moveTo(x,y);else ctx2d.lineTo(x,y);
+      x+=sw;
     }
-    ctx2d.stroke();
-    ctx2d.shadowBlur = 0;
+    ctx2d.stroke(); ctx2d.shadowBlur=0;
   }
 
-  if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register('/sw.js').catch(console.error);
-    });
-  }
+  if ('serviceWorker' in navigator)
+    window.addEventListener('load', ()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
 </script>
 </body>
 </html>
