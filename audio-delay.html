@@ -319,7 +319,7 @@
 <div class="container">
   <header>
     <div class="title">ECHO</div>
-    <div class="subtitle">Variable Delay Monitor</div>
+    <div class="subtitle">Variable Delay Monitor &nbsp;·&nbsp; <span style="color:var(--accent);opacity:0.6;">v0.5</span></div>
   </header>
 
   <!-- Delay control -->
@@ -566,46 +566,25 @@ registerProcessor('delay-processor', DelayProcessor);
 
       sourceNode.connect(analyser);
 
-      // Try AudioWorklet first, fall back to ScriptProcessor
-      let useWorklet = false;
-      try {
-        const blob    = new Blob([WORKLET_CODE], {type:'application/javascript'});
-        const blobUrl = URL.createObjectURL(blob);
-        await audioCtx.audioWorklet.addModule(blobUrl);
-        URL.revokeObjectURL(blobUrl);
-        useWorklet = true;
-      } catch(e) { console.warn('AudioWorklet unavailable, using ScriptProcessor:', e); }
-
-      if (useWorklet) {
-        procNode = new AudioWorkletNode(audioCtx, 'delay-processor',
-          {numberOfInputs:1, numberOfOutputs:1, outputChannelCount:[1]});
-        procNode.parameters.get('delaySamples').value = bufferSamples;
-        procNode.port.onmessage = (e) => {
-          filled = e.data.filled;
-          updateProgress(e.data.w, e.data.delay, sr);
-        };
-        sourceNode.connect(procNode);
-        procNode.connect(outGainNode);
-      } else {
-        // ScriptProcessor fallback — use smallest buffer to minimise glitches
-        ringBuf = new Float32Array(bufferSamples);
-        wPos = 0; rPos = 0; filled = false;
-        procNode = audioCtx.createScriptProcessor(256, 1, 1);
-        procNode.onaudioprocess = (e) => {
-          const inp = e.inputBuffer.getChannelData(0);
-          const out = e.outputBuffer.getChannelData(0);
-          for (let i = 0; i < inp.length; i++) {
-            ringBuf[wPos] = inp[i];
-            wPos = (wPos + 1) % bufferSamples;
-            if (!filled && wPos === 0) filled = true;
-            out[i] = filled ? ringBuf[rPos] : 0;
-            rPos = (rPos + 1) % bufferSamples;
-          }
-          updateProgress(wPos, bufferSamples, sr);
-        };
-        sourceNode.connect(procNode);
-        procNode.connect(outGainNode);
-      }
+      // ScriptProcessor — reliable across all mobile browsers
+      const useWorklet = false;
+      ringBuf = new Float32Array(bufferSamples);
+      wPos = 0; rPos = 0; filled = false;
+      procNode = audioCtx.createScriptProcessor(4096, 1, 1);
+      procNode.onaudioprocess = (e) => {
+        const inp = e.inputBuffer.getChannelData(0);
+        const out = e.outputBuffer.getChannelData(0);
+        for (let i = 0; i < inp.length; i++) {
+          ringBuf[wPos] = inp[i];
+          wPos = (wPos + 1) % bufferSamples;
+          if (!filled && wPos === 0) filled = true;
+          out[i] = filled ? ringBuf[rPos] : 0;
+          rPos = (rPos + 1) % bufferSamples;
+        }
+        updateProgress(wPos, bufferSamples, sr);
+      };
+      sourceNode.connect(procNode);
+      procNode.connect(outGainNode);
 
       outGainNode.connect(audioCtx.destination);
 
@@ -613,7 +592,7 @@ registerProcessor('delay-processor', DelayProcessor);
       mainBtn.textContent = '■ Stop';
       mainBtn.classList.add('active', 'stop');
       statusDot.classList.add('live');
-      setStatus('Live' + (useWorklet ? '' : ' (compat mode)'));
+      setStatus('Live v0.5');
       drawViz();
     } catch(err) {
       setStatus('Error: ' + err.message);
