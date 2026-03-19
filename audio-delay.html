@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v0.9</div>
+    <div style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v1.0</div>
   </header>
 
   <!-- Delay control -->
@@ -404,7 +404,10 @@
       <span style="color:var(--accent2);font-size:16px;min-width:32px;" id="recDurVal">5s</span>
     </div>
     <style>#recDurSlider::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;background:var(--accent2);border-radius:50%;}</style>
-    <button class="btn" id="recBtn" onclick="toggleRecord()" style="border-color:var(--accent2);color:var(--accent2);margin-bottom:8px;">⏺ RECORD MIC</button>
+    <div style="display:flex;gap:8px;margin-bottom:8px;">
+      <button class="btn" id="recBtn" onclick="startRecord()" style="border-color:var(--accent2);color:var(--accent2);margin:0;">⏺ RECORD</button>
+      <button class="btn" id="stopRecBtn" onclick="stopRecord()" disabled style="border-color:var(--dim);color:var(--dim);margin:0;">■ STOP + SAVE</button>
+    </div>
     <button class="dl-btn" id="dlRecBtn" onclick="downloadRecording()" disabled
       style="font-family:'Share Tech Mono',monospace;font-size:11px;letter-spacing:0.15em;background:transparent;border:1px solid var(--dim);color:var(--dim);padding:7px 14px;border-radius:3px;cursor:pointer;width:100%;">↓ Download recorded.wav</button>
   </div>
@@ -686,70 +689,104 @@
   let recProc       = null;
   let recCtx        = null;
   let recRunning    = false;
+  let recBuf        = [];
 
-  async function toggleRecord() {
-    if (recRunning) return; // one at a time
+  async function startRecord() {
+    if (recRunning) return;
     recRunning = true;
-    const btn = document.getElementById('recBtn');
-    const dur = parseInt(document.getElementById('recDurSlider').value);
-    btn.textContent = `⏺ RECORDING ${dur}s...`;
-    btn.style.borderColor = 'var(--accent2)';
-    btn.style.animation = 'pulse 0.8s step-end infinite';
+    recBuf = [];
+
+    const recBtn     = document.getElementById('recBtn');
+    const stopRecBtn = document.getElementById('stopRecBtn');
+    const dur        = parseInt(document.getElementById('recDurSlider').value);
+
+    recBtn.disabled              = true;
+    stopRecBtn.disabled          = false;
+    stopRecBtn.style.borderColor = 'var(--accent2)';
+    stopRecBtn.style.color       = 'var(--accent2)';
 
     try {
-      recStream = await navigator.mediaDevices.getUserMedia({
+      recStream     = await navigator.mediaDevices.getUserMedia({
         audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false},video:false});
-      recCtx = new AudioContext();
+      recCtx        = new AudioContext();
       recSampleRate = recCtx.sampleRate;
-      const totalN = Math.floor(dur * recSampleRate);
-      recSamples = new Float32Array(totalN);
-      let pos = 0;
 
       const src  = recCtx.createMediaStreamSource(recStream);
       recProc    = recCtx.createScriptProcessor(4096, 1, 1);
       const sink = recCtx.createGain(); sink.gain.value = 0;
       src.connect(recProc); recProc.connect(sink); sink.connect(recCtx.destination);
 
+      let elapsed = 0;
       recProc.onaudioprocess = (e) => {
         const d = e.inputBuffer.getChannelData(0);
-        for (let i=0; i<d.length && pos<totalN; i++) recSamples[pos++] = d[i];
-        const pct = Math.floor(pos/totalN*100);
-        btn.textContent = `⏺ ${pct}%...`;
+        recBuf.push(new Float32Array(d));
+        elapsed += d.length / recSampleRate;
+        const dbgEl = document.getElementById('debugInfo');
+        if (dbgEl) dbgEl.textContent = `⏺ Recording... ${elapsed.toFixed(1)}s`;
+        if (elapsed >= dur) stopRecord();
       };
 
-      await new Promise(r => setTimeout(r, dur*1000 + 200));
-
-      recProc.disconnect(); src.disconnect();
-      recStream.getTracks().forEach(t=>t.stop());
-      recCtx.close();
-
-      // Stats
-      let peak=0, rms=0;
-      for (let i=0;i<recSamples.length;i++){
-        if(Math.abs(recSamples[i])>peak) peak=Math.abs(recSamples[i]);
-        rms+=recSamples[i]*recSamples[i];
-      }
-      rms = Math.sqrt(rms/recSamples.length);
-      const toDb = v => v>0?(20*Math.log10(v)).toFixed(1)+' dB':'-∞';
-      const dbgEl = document.getElementById('debugInfo');
-      if (dbgEl) dbgEl.textContent =
-        `REC DONE: ${dur}s @ ${recSampleRate}Hz
-peak:${toDb(peak)}  rms:${toDb(rms)}
-Download and share with Claude`;
-
-      const dlBtn = document.getElementById('dlRecBtn');
-      dlBtn.disabled = false;
-      dlBtn.style.borderColor = 'var(--accent)';
-      dlBtn.style.color = 'var(--accent)';
-      btn.textContent = '⏺ RECORD AGAIN';
+      // Safety auto-stop
+      setTimeout(() => { if (recRunning) stopRecord(); }, dur * 1000 + 500);
 
     } catch(err) {
-      btn.textContent = '⏺ RECORD MIC';
+      recRunning              = false;
+      recBtn.disabled         = false;
+      stopRecBtn.disabled     = true;
       const dbgEl = document.getElementById('debugInfo');
       if (dbgEl) dbgEl.textContent = 'Rec error: ' + err.message;
     }
-    btn.style.animation = '';
+  }
+
+  function stopRecord() {
+    if (!recRunning) return;
     recRunning = false;
+
+    if (recProc)   { recProc.disconnect();                       recProc  = null; }
+    if (recStream) { recStream.getTracks().forEach(t=>t.stop()); recStream = null; }
+    if (recCtx)    { recCtx.close();                             recCtx   = null; }
+
+    const recBtn     = document.getElementById('recBtn');
+    const stopRecBtn = document.getElementById('stopRecBtn');
+    recBtn.disabled              = false;
+    recBtn.textContent           = '⏺ RECORD AGAIN';
+    stopRecBtn.disabled          = true;
+    stopRecBtn.style.borderColor = 'var(--dim)';
+    stopRecBtn.style.color       = 'var(--dim)';
+
+    // Flatten chunks
+    const totalN   = recBuf.reduce((s,c) => s+c.length, 0);
+    recSamples     = new Float32Array(totalN);
+    let off = 0;
+    for (const chunk of recBuf) { recSamples.set(chunk, off); off += chunk.length; }
+
+    // Stats
+    let peak=0, rms=0;
+    for (let i=0;i<recSamples.length;i++){
+      if(Math.abs(recSamples[i])>peak) peak=Math.abs(recSamples[i]);
+      rms+=recSamples[i]*recSamples[i];
+    }
+    rms = Math.sqrt(rms/recSamples.length);
+    const toDb   = v => v>0?(20*Math.log10(v)).toFixed(1)+'dB':'-∞';
+    const durSec = (recSamples.length/recSampleRate).toFixed(1);
+
+    const dbgEl = document.getElementById('debugInfo');
+    if (dbgEl) dbgEl.textContent =
+      `✓ Recorded ${durSec}s @ ${recSampleRate}Hz
+peak:${toDb(peak)}  rms:${toDb(rms)}
+Saving...`;
+
+    const dlBtn = document.getElementById('dlRecBtn');
+    dlBtn.disabled          = false;
+    dlBtn.style.borderColor = 'var(--accent)';
+    dlBtn.style.color       = 'var(--accent)';
+
+    // Auto-save immediately
+    downloadRecording();
+    if (dbgEl) dbgEl.textContent =
+      `✓ Saved ${durSec}s @ ${recSampleRate}Hz
+peak:${toDb(peak)}  rms:${toDb(rms)}
+Share recorded.wav with Claude`;
   }
 
   function downloadRecording() {
