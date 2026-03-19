@@ -390,6 +390,7 @@
     <div class="dot" id="statusDot"></div>
     <span class="status-text" id="statusText">Idle — Click start to begin</span>
   </div>
+  <div style="margin-top:8px;font-size:9px;letter-spacing:0.15em;color:var(--dim);padding:0 2px;" id="debugInfo"></div>
 </div>
 
 <script>
@@ -593,6 +594,7 @@ registerProcessor('delay-processor', DelayProcessor);
       mainBtn.classList.add('active', 'stop');
       statusDot.classList.add('live');
       setStatus('Live v0.5');
+      showDebug(sr, bufferSamples, 'ScriptProcessor');
       drawViz();
     } catch(err) {
       setStatus('Error: ' + err.message);
@@ -617,6 +619,11 @@ registerProcessor('delay-processor', DelayProcessor);
   }
 
   function setStatus(msg) { statusText.textContent = msg; }
+
+  function showDebug(sr, bufN, mode) {
+    const el = document.getElementById('debugInfo');
+    if (el) el.textContent = `sr:${sr}Hz  buf:${bufN}  mode:${mode}`;
+  }
 
   function drawViz() {
     if (!running || !analyser) return;
