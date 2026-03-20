@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v1.4</div>
+    <div style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v1.6</div>
   </header>
 
   <!-- Delay control -->
@@ -436,6 +436,10 @@
       <button class="btn" id="recBtn" onclick="startRecord()" style="border-color:var(--accent2);color:var(--accent2);margin:0;">⏺ RECORD</button>
       <button class="btn" id="stopRecBtn" onclick="stopRecord()" disabled style="border-color:var(--dim);color:var(--dim);margin:0;">■ STOP + SAVE</button>
     </div>
+    <button class="btn" id="saveLastBtn" onclick="saveLast()"
+      style="border-color:var(--warn);color:var(--warn);margin-bottom:8px;">
+      ⚡ SAVE LAST 10s
+    </button>
     <button class="dl-btn" id="dlRecBtn" onclick="downloadRecording()" disabled
       style="font-family:'Share Tech Mono',monospace;font-size:11px;letter-spacing:0.15em;background:transparent;border:1px solid var(--dim);color:var(--dim);padding:7px 14px;border-radius:3px;cursor:pointer;width:100%;">↓ Download recorded.wav</button>
   </div>
@@ -640,6 +644,11 @@
       ringBuf = new Float32Array(bufferSamples);
       wPos = 0; rPos = 0; filled = false;
 
+      // Rolling buffer always captures last 10s of mic
+      rollingSize = Math.floor(ROLLING_SECS * sr);
+      rollingBuf  = new Float32Array(rollingSize);
+      rollingW    = 0; rollingFull = false;
+
       sourceNode  = audioCtx.createMediaStreamSource(stream);
       analyser    = audioCtx.createAnalyser();
       analyser.fftSize = 256;
@@ -668,6 +677,11 @@
           // Multiply by spkGain to get the actual acoustic level at the speaker.
           const refIdx    = (refW - latN + refBufSize * 4) % refBufSize;
           const spkSample = refBuf[refIdx] * spkGain;
+
+          // ── Rolling capture — always record raw mic ──
+          rollingBuf[rollingW] = inp[i];
+          rollingW = (rollingW + 1) % rollingSize;
+          if (!rollingFull && rollingW === 0) rollingFull = true;
 
           // ── Step 2: subtract from mic (which heard the speaker + the room) ──
           // inp[i] has already been boosted by inGainNode, so it's at the same
@@ -713,7 +727,7 @@
       mainBtn.textContent = '■ Stop';
       mainBtn.classList.add('active', 'stop');
       statusDot.classList.add('live');
-      setStatus('Live — v1.4');
+      setStatus('Live — v1.6');
 
       // Show latN in debug so we can verify
       const dbgEl = document.getElementById('debugInfo');
@@ -727,13 +741,16 @@
   }
 
   function stop() {
+    // Auto-save last 10s before tearing down
+    saveLast();
+
     if (procNode)    { procNode.disconnect();    procNode = null; }
     if (sourceNode)  { sourceNode.disconnect();  sourceNode = null; }
     if (inGainNode)  { inGainNode.disconnect();  inGainNode  = null; }
     if (outGainNode) { outGainNode.disconnect(); outGainNode = null; }
     if (stream)      { stream.getTracks().forEach(t=>t.stop()); stream = null; }
     if (audioCtx)    { audioCtx.close(); audioCtx = null; }
-    ringBuf = null; refBuf = null;
+    ringBuf = null; refBuf = null; rollingBuf = null; rollingFull = false;
     running = false; filled = false;
     mainBtn.textContent = '▶ Start Listening';
     mainBtn.classList.remove('active','stop');
@@ -878,6 +895,51 @@ Saving...`;
       `✓ Saved ${durSec}s @ ${recSampleRate}Hz
 peak:${toDb(peak)}  rms:${toDb(rms)}
 Share recorded.wav with Claude`;
+  }
+
+  function saveLast() {
+    if (!rollingBuf) { alert('Start the app first'); return; }
+    const sr   = audioCtx?.sampleRate || 48000;
+    const size = rollingFull ? rollingSize : rollingW;
+    if (size === 0) { alert('No audio captured yet'); return; }
+
+    // Reconstruct in chronological order
+    const out = new Float32Array(size);
+    if (rollingFull) {
+      // Read from rollingW (oldest) to end, then 0 to rollingW-1
+      const tail = rollingSize - rollingW;
+      out.set(rollingBuf.slice(rollingW), 0);
+      out.set(rollingBuf.slice(0, rollingW), tail);
+    } else {
+      out.set(rollingBuf.slice(0, rollingW));
+    }
+
+    // Apply input gain so level matches what you heard
+    const gain = inGainNode?.gain.value || 1;
+    for (let i = 0; i < out.length; i++) out[i] = Math.max(-1, Math.min(1, out[i] * gain));
+
+    const secs = (out.length / sr).toFixed(1);
+    const dbgEl = document.getElementById('debugInfo');
+    if (dbgEl) dbgEl.textContent = `Saving last ${secs}s...`;
+
+    // Encode and download
+    const buf  = new ArrayBuffer(44 + out.length * 2);
+    const view = new DataView(buf);
+    const ws   = (o,s) => { for(let i=0;i<s.length;i++) view.setUint8(o+i,s.charCodeAt(i)); };
+    ws(0,'RIFF'); view.setUint32(4,36+out.length*2,true);
+    ws(8,'WAVE'); ws(12,'fmt '); view.setUint32(16,16,true);
+    view.setUint16(20,1,true); view.setUint16(22,1,true);
+    view.setUint32(24,sr,true); view.setUint32(28,sr*2,true);
+    view.setUint16(32,2,true); view.setUint16(34,16,true);
+    ws(36,'data'); view.setUint32(40,out.length*2,true);
+    for(let i=0;i<out.length;i++){
+      const s=Math.max(-1,Math.min(1,out[i]));
+      view.setInt16(44+i*2,s<0?s*0x8000:s*0x7FFF,true);
+    }
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([buf],{type:'audio/wav'}));
+    a.download='last-10s.wav'; a.click();
+    if (dbgEl) dbgEl.textContent = `Saved last-10s.wav (${secs}s @ ${sr}Hz)`;
   }
 
   function downloadRecording() {
