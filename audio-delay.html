@@ -388,17 +388,17 @@
     <div class="label-row">
       <span class="label">Speaker Latency</span>
       <span style="display:flex;align-items:baseline;gap:10px;">
-        <span><span class="value-display" id="latencyVal" style="font-size:20px;color:var(--warn)">178</span><span class="unit">ms</span></span>
+        <span><span class="value-display" id="latencyVal" style="font-size:20px;color:var(--warn)">315</span><span class="unit">ms</span></span>
         <button id="detectBtn" onclick="runLatencyDetection()" style="font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.2em;background:transparent;border:1px solid var(--dim);color:var(--dim);padding:4px 8px;border-radius:3px;cursor:pointer;transition:all 0.2s;" onmouseover="this.style.borderColor='var(--warn)';this.style.color='var(--warn)'" onmouseout="this.style.borderColor='var(--dim)';this.style.color='var(--dim)'">⟳ DETECT</button>
       </span>
     </div>
-    <input type="range" id="latencySlider" min="5" max="300" step="1" value="178">
+    <input type="range" id="latencySlider" min="5" max="400" step="1" value="315">
     <div class="ticks">
       <span class="tick">5ms</span>
       <span class="tick">75</span>
       <span class="tick">150</span>
       <span class="tick">225</span>
-      <span class="tick">300ms</span>
+      <span class="tick">400ms</span>
     </div>
     <div class="label" style="margin-top:8px;font-size:9px;color:var(--dim);" id="latencyNote">Estimated speaker→mic travel time. Click Detect to measure.</div>
   </div>
@@ -501,7 +501,7 @@
   fill(delaySlider,   ((1.0-0.1)/(10-0.1))*100);
   fill(volumeSlider,  80);
   fill(inGainSlider,  ((5-1)/(20-1))*100);
-  fill(latencySlider, ((178-5)/(300-5))*100);
+  fill(latencySlider, ((315-5)/(400-5))*100);
 
   delaySlider.addEventListener('input', () => {
     const v = parseFloat(delaySlider.value);
