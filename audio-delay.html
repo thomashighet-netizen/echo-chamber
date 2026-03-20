@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v1.7</div>
+    <div style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v1.8</div>
   </header>
 
   <!-- Delay control -->
@@ -467,6 +467,10 @@
   let refBuf     = null;
   let refBufSize = 0;
   let refW       = 0;
+  let rollingBuf  = null;
+  let rollingSize = 0;
+  let rollingW    = 0;
+  let rollingFull = false;
   let latN       = 0;
 
   // Simple scalar gain for subtraction — how loud the speaker echo is at the mic.
@@ -648,7 +652,8 @@
       // Rolling buffer always captures last 10s of mic
       rollingSize = Math.floor(ROLLING_SECS * sr);
       rollingBuf  = new Float32Array(rollingSize);
-      rollingW    = 0; rollingFull = false;
+      rollingW    = 0;
+      rollingFull = false;
 
       sourceNode  = audioCtx.createMediaStreamSource(stream);
       analyser    = audioCtx.createAnalyser();
@@ -708,12 +713,14 @@
           refW = (refW + 1) % refBufSize;
         }
 
+        // Write to shared vars — UI timer reads these
         const n = inp.length;
-        const toDb = v => v > 0 ? (20*Math.log10(Math.sqrt(v/n))).toFixed(1) : '-∞';
-        const dbgEl = document.getElementById('debugInfo');
-        if (dbgEl) dbgEl.innerHTML =
-          `sr:${sr} &nbsp; latN:${latN} &nbsp; echoGain:${echoGain} &nbsp; spkGain:${spkGain.toFixed(2)}<br>` +
-          `mic:${toDb(micPow)}dB &nbsp; ref:${toDb(refPow)}dB &nbsp; clean:${toDb(cleanPow)}dB`;
+        dbgMicPow   = micPow / n;
+        dbgRefPow   = refPow / n;
+        dbgCleanPow = cleanPow / n;
+        dbgSpkGain  = spkGain;
+        dbgSR       = sr;
+        dbgLatN     = latN;
 
         updateProgress(wPos, bufferSamples, sr);
       };
@@ -728,7 +735,7 @@
       mainBtn.textContent = '■ Stop';
       mainBtn.classList.add('active', 'stop');
       statusDot.classList.add('live');
-      setStatus('Live — v1.7');
+      setStatus('Live — v1.8');
 
       // Show latN in debug so we can verify
       const dbgEl = document.getElementById('debugInfo');
@@ -751,6 +758,7 @@
     if (outGainNode) { outGainNode.disconnect(); outGainNode = null; }
     if (stream)      { stream.getTracks().forEach(t=>t.stop()); stream = null; }
     if (audioCtx)    { audioCtx.close(); audioCtx = null; }
+    stopDebugTimer();
     ringBuf = null; refBuf = null; rollingBuf = null; rollingFull = false;
     running = false; filled = false;
     mainBtn.textContent = '▶ Start Listening';
@@ -762,6 +770,23 @@
     ctx2d.clearRect(0,0,canvas.width,canvas.height);
     const dbgEl = document.getElementById('debugInfo');
     if (dbgEl) dbgEl.textContent = '';
+  }
+
+  let debugTimerHandle = null;
+  function startDebugTimer() {
+    stopDebugTimer();
+    debugTimerHandle = setInterval(() => {
+      const db = v => v > 0 ? (20*Math.log10(Math.sqrt(v))).toFixed(1) : '-inf';
+      const el = document.getElementById('debugInfo');
+      if (el) el.innerHTML =
+        `sr:${dbgSR} &nbsp; latN:${dbgLatN} &nbsp; echoGain:${echoGain} &nbsp; spkGain:${dbgSpkGain.toFixed(2)}<br>` +
+        `mic:${db(dbgMicPow)}dB &nbsp; ref:${db(dbgRefPow)}dB &nbsp; clean:${db(dbgCleanPow)}dB`;
+    }, 200);
+  }
+  function stopDebugTimer() {
+    if (debugTimerHandle) { clearInterval(debugTimerHandle); debugTimerHandle = null; }
+    const el = document.getElementById('debugInfo');
+    if (el) el.textContent = '—';
   }
 
   function setStatus(msg) { statusText.textContent = msg; }
