@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v2.0</div>
+    <div style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v2.1</div>
   </header>
 
   <!-- Delay control -->
@@ -469,7 +469,7 @@
 
   // AEC reference buffer — stores raw output so we can subtract it from mic
   let refBuf = null, refBufSize = 0, refW = 0, latN = 0;
-  let echoGain = 0.36;  // -8.8dB measured
+  let echoGain = 1.0;   // start at 1.0 — ref now stores true speaker level
 
   // Rolling capture — always keeps last 10s of raw mic
   let rollingBuf = null, rollingSize = 0, rollingW = 0, rollingFull = false;
@@ -693,48 +693,52 @@
 
       procNode = audioCtx.createScriptProcessor(4096, 1, 1);
       procNode.onaudioprocess = (e) => {
-        const inp = e.inputBuffer.getChannelData(0);
-        const out = e.outputBuffer.getChannelData(0);
-        const spkGain = outGainNode.gain.value * inGainNode.gain.value;
+        const inp     = e.inputBuffer.getChannelData(0);
+        const out     = e.outputBuffer.getChannelData(0);
+        const outGain = outGainNode.gain.value;
+        const inGain  = inGainNode.gain.value;
 
         let micPow=0, refPow=0, cleanPow=0;
 
         for (let i=0; i<inp.length; i++) {
-          // 1. Store raw mic in rolling buffer
-          rollingBuf[rollingW] = inp[i];
+          // inp[i] is post-inGain. Normalise back to true mic level.
+          const micRaw = inp[i] / inGain;
+
+          // 1. Store true mic level in rolling buffer
+          rollingBuf[rollingW] = micRaw;
           rollingW = (rollingW+1)%rollingSize;
           if (!rollingFull && rollingW===0) rollingFull=true;
 
-          // 2. Look up what speaker played latN samples ago
+          // 2. Look up what speaker output was latN samples ago (stored pre-outGain)
           const refIdx = (refW - latN + refBufSize*4) % refBufSize;
-          const spk    = refBuf[refIdx] * spkGain;
+          // Multiply by outGain to get acoustic level, then echoGain for room attenuation
+          const spkAtMic = refBuf[refIdx] * outGain * echoGain;
 
-          // 3. Subtract from mic
-          const clean = inp[i] - echoGain * spk;
+          // 3. Subtract from mic (both now in true mic domain)
+          const clean = micRaw - spkAtMic;
 
-          micPow   += inp[i]*inp[i];
-          refPow   += spk*spk;
+          micPow   += micRaw*micRaw;
+          refPow   += spkAtMic*spkAtMic;
           cleanPow += clean*clean;
 
-          // 4. Write RAW mic (no AEC) into delay buffer — AEC temporarily disabled
-          //    This lets us verify ref buffer is working by checking if ref > -inf
-          ringBuf[wPos] = inp[i];
+          // 4. Write clean signal into delay buffer
+          ringBuf[wPos] = clean;
           wPos = (wPos+1)%bufN;
           if (!filled && wPos===0) filled=true;
 
-          // 5. Read delayed output
+          // 5. Read delayed output (pre-outGain — outGainNode applies it after proc)
           const outSample = filled ? ringBuf[rPos] : 0;
           rPos = (rPos+1)%bufN;
           out[i] = outSample;
 
-          // 6. Store raw output in ref buffer
+          // 6. Store pre-outGain output in ref buffer
           refBuf[refW] = outSample;
           refW = (refW+1)%refBufSize;
         }
 
-        // Update debug vars (read by timer)
+        // Update debug vars (read by UI timer)
         const n = inp.length;
-        dbgMic=micPow/n; dbgRef=refPow/n; dbgClean=cleanPow/n; dbgSpkGain=spkGain;
+        dbgMic=micPow/n; dbgRef=refPow/n; dbgClean=cleanPow/n; dbgSpkGain=outGain*inGain;
 
         // Buffer progress
         if (filled) {
@@ -756,7 +760,7 @@
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v2.0 (AEC OFF)');
+      setStatus('Live — v2.1');
       startDebugTimer();
       drawViz();
 
