@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v1.6</div>
+    <div style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v1.7</div>
   </header>
 
   <!-- Delay control -->
@@ -420,6 +420,7 @@
     <span class="status-text" id="statusText">Idle — Click start to begin</span>
   </div>
   <div style="margin-top:12px;background:#111;border:2px solid var(--accent);border-radius:4px;padding:12px;font-size:14px;letter-spacing:0.1em;color:var(--accent);line-height:2;word-break:break-all;" id="debugInfo">—</div>
+  <div style="margin-top:6px;font-size:12px;letter-spacing:0.1em;color:var(--warn);padding:4px 2px;" id="saveStatus"></div>
 
   <!-- Record panel -->
   <div style="margin-top:12px;background:var(--panel);border:1px solid var(--border);border-radius:4px;padding:16px;">
@@ -727,7 +728,7 @@
       mainBtn.textContent = '■ Stop';
       mainBtn.classList.add('active', 'stop');
       statusDot.classList.add('live');
-      setStatus('Live — v1.6');
+      setStatus('Live — v1.7');
 
       // Show latN in debug so we can verify
       const dbgEl = document.getElementById('debugInfo');
@@ -891,10 +892,8 @@ Saving...`;
 
     // Auto-save immediately
     downloadRecording();
-    if (dbgEl) dbgEl.textContent =
-      `✓ Saved ${durSec}s @ ${recSampleRate}Hz
-peak:${toDb(peak)}  rms:${toDb(rms)}
-Share recorded.wav with Claude`;
+    const saveEl4 = document.getElementById('saveStatus');
+    if (saveEl4) saveEl4.textContent = `✓ Saved ${durSec}s @ ${recSampleRate}Hz  peak:${toDb(peak)}  rms:${toDb(rms)}`;
   }
 
   function saveLast() {
@@ -920,7 +919,8 @@ Share recorded.wav with Claude`;
 
     const secs = (out.length / sr).toFixed(1);
     const dbgEl = document.getElementById('debugInfo');
-    if (dbgEl) dbgEl.textContent = `Saving last ${secs}s...`;
+    const saveEl = document.getElementById('saveStatus');
+    if (saveEl) saveEl.textContent = `Saving last ${secs}s...`;
 
     // Encode and download
     const buf  = new ArrayBuffer(44 + out.length * 2);
@@ -939,7 +939,8 @@ Share recorded.wav with Claude`;
     const a=document.createElement('a');
     a.href=URL.createObjectURL(new Blob([buf],{type:'audio/wav'}));
     a.download='last-10s.wav'; a.click();
-    if (dbgEl) dbgEl.textContent = `Saved last-10s.wav (${secs}s @ ${sr}Hz)`;
+    const saveEl2 = document.getElementById('saveStatus');
+    if (saveEl2) saveEl2.textContent = `✓ Saved last-10s.wav (${secs}s @ ${sr}Hz)`;
   }
 
   function downloadRecording() {
