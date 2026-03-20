@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v1.8</div>
+    <div style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v1.9</div>
   </header>
 
   <!-- Delay control -->
@@ -419,6 +419,13 @@
     <div class="dot" id="statusDot"></div>
     <span class="status-text" id="statusText">Idle — Click start to begin</span>
   </div>
+
+  <!-- Debug panel -->
+  <div style="margin-top:12px;background:#111;border:2px solid var(--accent);border-radius:4px;padding:12px;font-size:13px;letter-spacing:0.08em;color:var(--accent);line-height:2;word-break:break-all;min-height:60px;" id="debugInfo">—</div>
+  <div style="margin-top:6px;font-size:11px;letter-spacing:0.1em;color:var(--warn);padding:2px;" id="saveStatus"></div>
+
+  <!-- Save last button -->
+  <button class="btn" id="saveBtn" onclick="saveLast()" style="margin-top:10px;border-color:var(--warn);color:var(--warn);">⚡ SAVE LAST 10s</button>
   <div style="margin-top:12px;background:#111;border:2px solid var(--accent);border-radius:4px;padding:12px;font-size:14px;letter-spacing:0.1em;color:var(--accent);line-height:2;word-break:break-all;" id="debugInfo">—</div>
   <div style="margin-top:6px;font-size:12px;letter-spacing:0.1em;color:var(--warn);padding:4px 2px;" id="saveStatus"></div>
 
@@ -443,45 +450,41 @@
     </button>
     <button class="dl-btn" id="dlRecBtn" onclick="downloadRecording()" disabled
       style="font-family:'Share Tech Mono',monospace;font-size:11px;letter-spacing:0.15em;background:transparent;border:1px solid var(--dim);color:var(--dim);padding:7px 14px;border-radius:3px;cursor:pointer;width:100%;">↓ Download recorded.wav</button>
-  </div>
+  
 </div>
 
 <script>
+  // ── State ──────────────────────────────────────────────────────────────────
   let audioCtx    = null;
   let sourceNode  = null;
-  let procNode    = null;
-  let outGainNode = null;
   let inGainNode  = null;
+  let outGainNode = null;
+  let procNode    = null;
   let analyser    = null;
   let stream      = null;
   let running     = false;
-  let filled      = false;
-  let bufferSamples = 0;
 
-  // Main delay ring buffer — what gets sent to speaker
-  let ringBuf = null;
-  let wPos = 0, rPos = 0;
+  // Delay ring buffer
+  let ringBuf = null, wPos = 0, rPos = 0, filled = false, bufN = 0;
 
-  // Speaker reference buffer — a copy of what was sent to the speaker,
-  // so we can look back latN samples and subtract it from the mic.
-  let refBuf     = null;
-  let refBufSize = 0;
-  let refW       = 0;
-  let rollingBuf  = null;
-  let rollingSize = 0;
-  let rollingW    = 0;
-  let rollingFull = false;
-  let latN       = 0;
+  // AEC reference buffer — stores raw output so we can subtract it from mic
+  let refBuf = null, refBufSize = 0, refW = 0, latN = 0;
+  let echoGain = 0.36;  // -8.8dB measured
 
-  // Simple scalar gain for subtraction — how loud the speaker echo is at the mic.
-  // Measured: -8.8dB = ~0.36 linear. Start here, user can tune if needed.
-  let echoGain = 0.36;
+  // Rolling capture — always keeps last 10s of raw mic
+  let rollingBuf = null, rollingSize = 0, rollingW = 0, rollingFull = false;
 
+  // Debug metrics — written by audio callback, read by UI timer
+  let dbgMic = 0, dbgRef = 0, dbgClean = 0, dbgSpkGain = 1, dbgSR = 0;
+
+  // ── DOM refs ───────────────────────────────────────────────────────────────
   const delaySlider   = document.getElementById('delaySlider');
   const volumeSlider  = document.getElementById('volumeSlider');
+  const inGainSlider  = document.getElementById('inGainSlider');
   const latencySlider = document.getElementById('latencySlider');
   const delayVal      = document.getElementById('delayVal');
   const volVal        = document.getElementById('volVal');
+  const inGainVal     = document.getElementById('inGainVal');
   const latencyVal    = document.getElementById('latencyVal');
   const latencyNote   = document.getElementById('latencyNote');
   const detectBtn     = document.getElementById('detectBtn');
@@ -493,107 +496,88 @@
   const canvas        = document.getElementById('viz');
   const ctx2d         = canvas.getContext('2d');
 
-  function setSliderFill(s, pct) { s.style.setProperty('--fill', pct + '%'); }
-  function getLatencyMs() { return parseInt(latencySlider.value); }
-
-  setSliderFill(delaySlider,   ((1.0 - 0.1) / (10 - 0.1)) * 100);
-  setSliderFill(volumeSlider,  80);
-  setSliderFill(latencySlider, ((178 - 5) / (300 - 5)) * 100);
+  // ── Slider fills ───────────────────────────────────────────────────────────
+  function fill(slider, pct) { slider.style.setProperty('--fill', pct + '%'); }
+  fill(delaySlider,   ((1.0-0.1)/(10-0.1))*100);
+  fill(volumeSlider,  80);
+  fill(inGainSlider,  ((5-1)/(20-1))*100);
+  fill(latencySlider, ((178-5)/(300-5))*100);
 
   delaySlider.addEventListener('input', () => {
     const v = parseFloat(delaySlider.value);
     delayVal.textContent = v.toFixed(1);
-    setSliderFill(delaySlider, ((v - 0.1) / (10 - 0.1)) * 100);
+    fill(delaySlider, ((v-0.1)/(10-0.1))*100);
   });
-
   volumeSlider.addEventListener('input', () => {
     const v = parseInt(volumeSlider.value);
     volVal.textContent = v;
-    setSliderFill(volumeSlider, v);
-    if (outGainNode) outGainNode.gain.setTargetAtTime(v / 100, audioCtx.currentTime, 0.05);
+    fill(volumeSlider, v);
+    if (outGainNode) outGainNode.gain.setTargetAtTime(v/100, audioCtx.currentTime, 0.05);
   });
-
-  document.getElementById('inGainSlider').addEventListener('input', () => {
-    const v = parseFloat(document.getElementById('inGainSlider').value);
-    document.getElementById('inGainVal').textContent = v.toFixed(1);
+  inGainSlider.addEventListener('input', () => {
+    const v = parseFloat(inGainSlider.value);
+    inGainVal.textContent = v.toFixed(1);
+    fill(inGainSlider, ((v-1)/(20-1))*100);
     if (inGainNode) inGainNode.gain.setTargetAtTime(v, audioCtx.currentTime, 0.05);
   });
-
   latencySlider.addEventListener('input', () => {
     const v = parseInt(latencySlider.value);
     latencyVal.textContent = v;
-    setSliderFill(latencySlider, ((v - 5) / (300 - 5)) * 100);
+    fill(latencySlider, ((v-5)/(300-5))*100);
     latencyNote.textContent = 'Manually set.';
-    if (audioCtx) latN = Math.floor(v / 1000 * audioCtx.sampleRate);
+    if (audioCtx) latN = Math.floor(v/1000*audioCtx.sampleRate);
   });
 
-  // ── Mic enumeration ──────────────────────────────────────────────────────────
+  // ── Mic selector ───────────────────────────────────────────────────────────
   async function refreshMics() {
     try {
-      // Must request mic first to get labels
       const tmp = await navigator.mediaDevices.getUserMedia({audio:true,video:false});
       tmp.getTracks().forEach(t=>t.stop());
-
       const devices = await navigator.mediaDevices.enumerateDevices();
-      const mics    = devices.filter(d => d.kind === 'audioinput');
-      const sel     = document.getElementById('micSelect');
-      const note    = document.getElementById('micNote');
-
+      const mics = devices.filter(d=>d.kind==='audioinput');
+      const sel  = document.getElementById('micSelect');
       sel.innerHTML = '<option value="">Default mic</option>';
-      mics.forEach((m, i) => {
-        const opt   = document.createElement('option');
-        opt.value   = m.deviceId;
-        opt.textContent = m.label || `Microphone ${i+1}`;
-        sel.appendChild(opt);
+      mics.forEach((m,i) => {
+        const o = document.createElement('option');
+        o.value = m.deviceId;
+        o.textContent = m.label || 'Microphone '+(i+1);
+        sel.appendChild(o);
       });
-
-      note.textContent = `Found ${mics.length} mic(s). Select one and restart.`;
-    } catch(e) {
-      document.getElementById('micNote').textContent = 'Error: ' + e.message;
-    }
+      document.getElementById('micNote').textContent = `Found ${mics.length} mic(s).`;
+    } catch(e) { document.getElementById('micNote').textContent = 'Error: '+e.message; }
   }
 
-  function getSelectedMicConstraints() {
+  function getMicConstraints() {
     const deviceId = document.getElementById('micSelect')?.value;
-    const base = {
-      echoCancellation: false,
-      noiseSuppression: false,
-      autoGainControl:  false,
-      // Prefer rear/environment-facing mic (same side as back camera)
-      // Falls back gracefully if not supported
-      facingMode: { ideal: 'environment' }
-    };
-    return deviceId ? { ...base, facingMode: undefined, deviceId: { exact: deviceId } } : base;
+    const base = { echoCancellation:false, noiseSuppression:false, autoGainControl:false };
+    return deviceId ? { ...base, deviceId:{ exact:deviceId } } : { ...base, facingMode:{ ideal:'environment' } };
   }
 
-  // ── Latency detection ──
+  // ── Latency detection ──────────────────────────────────────────────────────
   let detecting = false;
   async function runLatencyDetection() {
     if (detecting) return;
     detecting = true;
     detectBtn.textContent = '⟳ DETECTING...';
     detectBtn.style.color = 'var(--warn)';
-    detectBtn.style.borderColor = 'var(--warn)';
     latencyNote.textContent = 'Playing probe tone... keep quiet.';
     try {
-      const ds = await navigator.mediaDevices.getUserMedia({
-        audio:getSelectedMicConstraints(),video:false});
+      const ds = await navigator.mediaDevices.getUserMedia({audio:getMicConstraints(),video:false});
       const dc = new AudioContext();
       const sr = dc.sampleRate;
-      const chirpN = Math.floor(40/1000*sr), listenN = Math.floor(500/1000*sr);
-      const cb = dc.createBuffer(1, chirpN, sr);
-      const cd = cb.getChannelData(0);
-      for (let i=0;i<chirpN;i++){const e=0.5-0.5*Math.cos(2*Math.PI*i/chirpN);cd[i]=e*Math.sin(2*Math.PI*18500*i/sr);}
+      const chirpN=Math.floor(40/1000*sr), listenN=Math.floor(500/1000*sr);
+      const cb=dc.createBuffer(1,chirpN,sr); const cd=cb.getChannelData(0);
+      for(let i=0;i<chirpN;i++){const e=0.5-0.5*Math.cos(2*Math.PI*i/chirpN);cd[i]=e*Math.sin(2*Math.PI*18500*i/sr);}
       const rec=new Float32Array(listenN); let rp=0;
       const ms=dc.createMediaStreamSource(ds),sp=dc.createScriptProcessor(512,1,1),sg=dc.createGain();
       sg.gain.value=0; ms.connect(sp);sp.connect(sg);sg.connect(dc.destination);
-      sp.onaudioprocess=(e)=>{const d=e.inputBuffer.getChannelData(0);for(let i=0;i<d.length&&rp<listenN;i++)rec[rp++]=d[i];};
+      sp.onaudioprocess=(ev)=>{const d=ev.inputBuffer.getChannelData(0);for(let i=0;i<d.length&&rp<listenN;i++)rec[rp++]=d[i];};
       const cs=dc.createBufferSource(),cg=dc.createGain();cg.gain.value=0.6;
       cs.buffer=cb;cs.connect(cg);cg.connect(dc.destination);cs.start();
       await new Promise(r=>setTimeout(r,580));
       sp.disconnect();ms.disconnect();ds.getTracks().forEach(t=>t.stop());dc.close();
-      let refPow=0;for(let i=0;i<chirpN;i++)refPow+=cd[i]*cd[i];
-      const refRms=Math.sqrt(refPow/chirpN)||1;
+      let rp2=0;for(let i=0;i<chirpN;i++)rp2+=cd[i]*cd[i];
+      const refRms=Math.sqrt(rp2/chirpN)||1;
       let bestLag=Math.floor(5/1000*sr),bestScore=-Infinity;
       for(let lag=bestLag;lag<Math.floor(400/1000*sr)&&lag+chirpN<listenN;lag++){
         let dot=0,mp=0;for(let j=0;j<chirpN;j++){dot+=cd[j]*rec[lag+j];mp+=rec[lag+j]*rec[lag+j];}
@@ -603,126 +587,162 @@
       const oneWayMs=Math.round((bestLag/sr)*500);
       if(bestScore>0.04&&oneWayMs>=5&&oneWayMs<=350){
         const c=Math.max(5,Math.min(300,oneWayMs));
-        latencySlider.value=c;latencyVal.textContent=c;
-        setSliderFill(latencySlider,((c-5)/(300-5))*100);
-        latencyNote.textContent=`✓ Detected ${c}ms (score: ${bestScore.toFixed(3)})`;
-        if (audioCtx) latN = Math.floor(c / 1000 * audioCtx.sampleRate);
+        latencySlider.value=c; latencyVal.textContent=c;
+        fill(latencySlider,((c-5)/(300-5))*100);
+        if(audioCtx) latN=Math.floor(c/1000*audioCtx.sampleRate);
+        latencyNote.textContent=`✓ Detected ${c}ms (score:${bestScore.toFixed(3)})`;
       } else {
-        latencyNote.textContent=`⚠ Uncertain (score: ${bestScore.toFixed(3)}) — using ${getLatencyMs()}ms`;
+        latencyNote.textContent=`⚠ Uncertain (score:${bestScore.toFixed(3)}) — using ${latencySlider.value}ms`;
       }
     } catch(e){ latencyNote.textContent='⚠ Failed: '+e.message; }
     detectBtn.textContent='⟳ DETECT';
-    detectBtn.style.color='';detectBtn.style.borderColor='';
+    detectBtn.style.color='';
     detecting=false;
   }
 
-  function updateProgress(w, delay, sr) {
-    if (filled) {
-      bufferFill.style.width = '100%';
-      const d = parseFloat(delaySlider.value);
-      bufferLabel.textContent = `Buffer: ${d.toFixed(1)}s / ${d.toFixed(1)}s`;
-    } else {
-      bufferFill.style.width = ((w / delay) * 100) + '%';
-      bufferLabel.textContent = `Buffer: ${(w/sr).toFixed(1)}s / ${(delay/sr).toFixed(1)}s`;
-    }
+  // ── Debug timer ────────────────────────────────────────────────────────────
+  let debugTimer = null;
+  function startDebugTimer() {
+    stopDebugTimer();
+    debugTimer = setInterval(() => {
+      const db = v => v>0 ? (20*Math.log10(Math.sqrt(v))).toFixed(1)+'dB' : '-inf';
+      document.getElementById('debugInfo').innerHTML =
+        `sr:${dbgSR} &nbsp; latN:${latN} &nbsp; spkGain:${dbgSpkGain.toFixed(2)}<br>` +
+        `mic:${db(dbgMic)} &nbsp; ref:${db(dbgRef)} &nbsp; clean:${db(dbgClean)}`;
+    }, 250);
+  }
+  function stopDebugTimer() {
+    if (debugTimer) { clearInterval(debugTimer); debugTimer = null; }
+    document.getElementById('debugInfo').textContent = '—';
   }
 
+  // ── Save last 10s ──────────────────────────────────────────────────────────
+  function saveLast() {
+    if (!rollingBuf || (!rollingFull && rollingW === 0)) return;
+    const sr   = audioCtx?.sampleRate || 48000;
+    const size = rollingFull ? rollingSize : rollingW;
+    const out  = new Float32Array(size);
+    if (rollingFull) {
+      out.set(rollingBuf.slice(rollingW));
+      out.set(rollingBuf.slice(0, rollingW), rollingSize - rollingW);
+    } else {
+      out.set(rollingBuf.slice(0, rollingW));
+    }
+    // Apply input gain so saved level matches what was heard
+    const gain = inGainNode?.gain.value || 1;
+    for (let i=0;i<out.length;i++) out[i] = Math.max(-1,Math.min(1,out[i]*gain));
+
+    encodeAndDownload(out, sr, 'last-10s.wav');
+    const secs = (size/sr).toFixed(1);
+    document.getElementById('saveStatus').textContent = `✓ Saved last-10s.wav (${secs}s)`;
+  }
+
+  function encodeAndDownload(samples, sr, filename) {
+    const buf=new ArrayBuffer(44+samples.length*2);
+    const v=new DataView(buf);
+    const ws=(o,s)=>{for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i));};
+    ws(0,'RIFF');v.setUint32(4,36+samples.length*2,true);
+    ws(8,'WAVE');ws(12,'fmt ');v.setUint32(16,16,true);
+    v.setUint16(20,1,true);v.setUint16(22,1,true);
+    v.setUint32(24,sr,true);v.setUint32(28,sr*2,true);
+    v.setUint16(32,2,true);v.setUint16(34,16,true);
+    ws(36,'data');v.setUint32(40,samples.length*2,true);
+    for(let i=0;i<samples.length;i++){
+      const s=Math.max(-1,Math.min(1,samples[i]));
+      v.setInt16(44+i*2,s<0?s*0x8000:s*0x7FFF,true);
+    }
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([buf],{type:'audio/wav'}));
+    a.download=filename; a.click();
+  }
+
+  // ── Main audio engine ──────────────────────────────────────────────────────
   async function toggle() { if (!running) await start(); else stop(); }
 
   async function start() {
     try {
-      setStatus('Requesting microphone...');
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio:getSelectedMicConstraints(),video:false});
+      setStatus('Opening mic...');
+      stream = await navigator.mediaDevices.getUserMedia({audio:getMicConstraints(),video:false});
 
-      audioCtx      = new AudioContext();
-      const sr      = audioCtx.sampleRate;
-      bufferSamples = Math.floor(parseFloat(delaySlider.value) * sr);
-      const vol     = parseInt(volumeSlider.value) / 100;
-      latN          = Math.floor(getLatencyMs() / 1000 * sr);
+      audioCtx = new AudioContext();
+      const sr = audioCtx.sampleRate;
+      const delaySec = parseFloat(delaySlider.value);
+      const vol      = parseInt(volumeSlider.value)/100;
+      const inGain   = parseFloat(inGainSlider.value);
 
-      // Ref buffer: holds recent speaker output. Must be > latN.
-      refBufSize = Math.max(Math.floor(sr * 0.6), 32768);
-      refBuf     = new Float32Array(refBufSize);
-      refW       = 0;
+      latN        = Math.floor(parseInt(latencySlider.value)/1000*sr);
+      bufN        = Math.floor(delaySec*sr);
+      ringBuf     = new Float32Array(bufN);
+      wPos=0; rPos=0; filled=false;
 
-      ringBuf = new Float32Array(bufferSamples);
-      wPos = 0; rPos = 0; filled = false;
+      refBufSize  = Math.max(Math.floor(sr*0.6), 32768);
+      refBuf      = new Float32Array(refBufSize);
+      refW=0;
 
-      // Rolling buffer always captures last 10s of mic
-      rollingSize = Math.floor(ROLLING_SECS * sr);
+      rollingSize = Math.floor(10*sr);
       rollingBuf  = new Float32Array(rollingSize);
-      rollingW    = 0;
-      rollingFull = false;
+      rollingW=0; rollingFull=false;
 
+      dbgSR = sr;
+
+      // Build audio graph: mic → inGain → proc → outGain → speaker
       sourceNode  = audioCtx.createMediaStreamSource(stream);
-      analyser    = audioCtx.createAnalyser();
-      analyser.fftSize = 256;
-      inGainNode  = audioCtx.createGain();
-      inGainNode.gain.value = parseFloat(document.getElementById('inGainSlider').value);
-      outGainNode = audioCtx.createGain();
-      outGainNode.gain.value = vol;
-
-      // True speaker gain = outGain * inGain (what actually comes out the speaker)
-      // We need this to correctly scale the reference signal for subtraction.
-      // Note: we read this live each block so slider changes take effect immediately.
-      const getSpkGain = () => outGainNode.gain.value * inGainNode.gain.value;
+      analyser    = audioCtx.createAnalyser(); analyser.fftSize=256;
+      inGainNode  = audioCtx.createGain(); inGainNode.gain.value=inGain;
+      outGainNode = audioCtx.createGain(); outGainNode.gain.value=vol;
 
       procNode = audioCtx.createScriptProcessor(4096, 1, 1);
       procNode.onaudioprocess = (e) => {
-        const inp     = e.inputBuffer.getChannelData(0);
-        const out     = e.outputBuffer.getChannelData(0);
-        const spkGain = getSpkGain();
+        const inp = e.inputBuffer.getChannelData(0);
+        const out = e.outputBuffer.getChannelData(0);
+        const spkGain = outGainNode.gain.value * inGainNode.gain.value;
 
-        let micPow = 0, refPow = 0, cleanPow = 0;
+        let micPow=0, refPow=0, cleanPow=0;
 
-        for (let i = 0; i < inp.length; i++) {
-
-          // ── Step 1: look up what the speaker was emitting latN samples ago ──
-          // refBuf stores the raw delay output (pre-gain).
-          // Multiply by spkGain to get the actual acoustic level at the speaker.
-          const refIdx    = (refW - latN + refBufSize * 4) % refBufSize;
-          const spkSample = refBuf[refIdx] * spkGain;
-
-          // ── Rolling capture — always record raw mic ──
+        for (let i=0; i<inp.length; i++) {
+          // 1. Store raw mic in rolling buffer
           rollingBuf[rollingW] = inp[i];
-          rollingW = (rollingW + 1) % rollingSize;
-          if (!rollingFull && rollingW === 0) rollingFull = true;
+          rollingW = (rollingW+1)%rollingSize;
+          if (!rollingFull && rollingW===0) rollingFull=true;
 
-          // ── Step 2: subtract from mic (which heard the speaker + the room) ──
-          // inp[i] has already been boosted by inGainNode, so it's at the same
-          // scale as spkSample. echoGain compensates for room attenuation.
-          const clean = inp[i] - echoGain * spkSample;
+          // 2. Look up what speaker played latN samples ago
+          const refIdx = (refW - latN + refBufSize*4) % refBufSize;
+          const spk    = refBuf[refIdx] * spkGain;
 
-          micPow   += inp[i]    * inp[i];
-          refPow   += spkSample * spkSample;
-          cleanPow += clean     * clean;
+          // 3. Subtract from mic
+          const clean = inp[i] - echoGain * spk;
 
-          // ── Step 3: write clean signal into delay ring buffer ──
+          micPow   += inp[i]*inp[i];
+          refPow   += spk*spk;
+          cleanPow += clean*clean;
+
+          // 4. Write clean signal into delay buffer
           ringBuf[wPos] = clean;
-          wPos = (wPos + 1) % bufferSamples;
-          if (!filled && wPos === 0) filled = true;
+          wPos = (wPos+1)%bufN;
+          if (!filled && wPos===0) filled=true;
 
-          // ── Step 4: read delayed output (pre-gain) ──
+          // 5. Read delayed output
           const outSample = filled ? ringBuf[rPos] : 0;
-          rPos = (rPos + 1) % bufferSamples;
+          rPos = (rPos+1)%bufN;
           out[i] = outSample;
 
-          // ── Step 5: store raw output in ref buffer for next AEC iteration ──
+          // 6. Store raw output in ref buffer
           refBuf[refW] = outSample;
-          refW = (refW + 1) % refBufSize;
+          refW = (refW+1)%refBufSize;
         }
 
-        // Write to shared vars — UI timer reads these
+        // Update debug vars (read by timer)
         const n = inp.length;
-        dbgMicPow   = micPow / n;
-        dbgRefPow   = refPow / n;
-        dbgCleanPow = cleanPow / n;
-        dbgSpkGain  = spkGain;
-        dbgSR       = sr;
-        dbgLatN     = latN;
+        dbgMic=micPow/n; dbgRef=refPow/n; dbgClean=cleanPow/n; dbgSpkGain=spkGain;
 
-        updateProgress(wPos, bufferSamples, sr);
+        // Buffer progress
+        if (filled) {
+          bufferFill.style.width='100%';
+          bufferLabel.textContent=`Buffer: ${delaySec.toFixed(1)}s / ${delaySec.toFixed(1)}s`;
+        } else {
+          bufferFill.style.width=((wPos/bufN)*100)+'%';
+          bufferLabel.textContent=`Buffer: ${(wPos/sr).toFixed(1)}s / ${delaySec.toFixed(1)}s`;
+        }
       };
 
       sourceNode.connect(analyser);
@@ -731,73 +751,48 @@
       procNode.connect(outGainNode);
       outGainNode.connect(audioCtx.destination);
 
-      running = true;
-      mainBtn.textContent = '■ Stop';
-      mainBtn.classList.add('active', 'stop');
+      running=true;
+      mainBtn.textContent='■ Stop';
+      mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v1.8');
-
-      // Show latN in debug so we can verify
-      const dbgEl = document.getElementById('debugInfo');
-      if (dbgEl) dbgEl.textContent = `sr:${sr}  latN:${latN}  echoGain:${echoGain}`;
-
+      setStatus('Live — v1.9');
+      startDebugTimer();
       drawViz();
+
     } catch(err) {
-      setStatus('Error: ' + err.message);
+      setStatus('Error: '+err.message);
       console.error(err);
     }
   }
 
   function stop() {
-    // Auto-save last 10s before tearing down
-    saveLast();
-
-    if (procNode)    { procNode.disconnect();    procNode = null; }
-    if (sourceNode)  { sourceNode.disconnect();  sourceNode = null; }
-    if (inGainNode)  { inGainNode.disconnect();  inGainNode  = null; }
-    if (outGainNode) { outGainNode.disconnect(); outGainNode = null; }
-    if (stream)      { stream.getTracks().forEach(t=>t.stop()); stream = null; }
-    if (audioCtx)    { audioCtx.close(); audioCtx = null; }
+    saveLast(); // auto-save before teardown
     stopDebugTimer();
-    ringBuf = null; refBuf = null; rollingBuf = null; rollingFull = false;
-    running = false; filled = false;
-    mainBtn.textContent = '▶ Start Listening';
+    if (procNode)    { procNode.disconnect();    procNode=null; }
+    if (inGainNode)  { inGainNode.disconnect();  inGainNode=null; }
+    if (outGainNode) { outGainNode.disconnect(); outGainNode=null; }
+    if (sourceNode)  { sourceNode.disconnect();  sourceNode=null; }
+    if (stream)      { stream.getTracks().forEach(t=>t.stop()); stream=null; }
+    if (audioCtx)    { audioCtx.close(); audioCtx=null; }
+    ringBuf=null; refBuf=null; rollingBuf=null;
+    running=false; filled=false;
+    mainBtn.textContent='▶ Start Listening';
     mainBtn.classList.remove('active','stop');
     statusDot.classList.remove('live');
     setStatus('Idle — Click start to begin');
-    bufferFill.style.width = '0%';
-    bufferLabel.textContent = 'Buffer: 0.0s / 0.0s';
+    bufferFill.style.width='0%';
+    bufferLabel.textContent='Buffer: 0.0s / 0.0s';
     ctx2d.clearRect(0,0,canvas.width,canvas.height);
-    const dbgEl = document.getElementById('debugInfo');
-    if (dbgEl) dbgEl.textContent = '';
   }
 
-  let debugTimerHandle = null;
-  function startDebugTimer() {
-    stopDebugTimer();
-    debugTimerHandle = setInterval(() => {
-      const db = v => v > 0 ? (20*Math.log10(Math.sqrt(v))).toFixed(1) : '-inf';
-      const el = document.getElementById('debugInfo');
-      if (el) el.innerHTML =
-        `sr:${dbgSR} &nbsp; latN:${dbgLatN} &nbsp; echoGain:${echoGain} &nbsp; spkGain:${dbgSpkGain.toFixed(2)}<br>` +
-        `mic:${db(dbgMicPow)}dB &nbsp; ref:${db(dbgRefPow)}dB &nbsp; clean:${db(dbgCleanPow)}dB`;
-    }, 200);
-  }
-  function stopDebugTimer() {
-    if (debugTimerHandle) { clearInterval(debugTimerHandle); debugTimerHandle = null; }
-    const el = document.getElementById('debugInfo');
-    if (el) el.textContent = '—';
-  }
-
-  function setStatus(msg) { statusText.textContent = msg; }
+  function setStatus(msg) { statusText.textContent=msg; }
 
   function drawViz() {
-    if (!running || !analyser) return;
+    if (!running||!analyser) return;
     requestAnimationFrame(drawViz);
-    const W = canvas.clientWidth * devicePixelRatio;
-    const H = canvas.clientHeight * devicePixelRatio;
-    if (canvas.width !== W || canvas.height !== H) { canvas.width=W; canvas.height=H; }
-    const data = new Uint8Array(analyser.frequencyBinCount);
+    const W=canvas.clientWidth*devicePixelRatio, H=canvas.clientHeight*devicePixelRatio;
+    if (canvas.width!==W||canvas.height!==H){canvas.width=W;canvas.height=H;}
+    const data=new Uint8Array(analyser.frequencyBinCount);
     analyser.getByteTimeDomainData(data);
     ctx2d.clearRect(0,0,W,H);
     ctx2d.strokeStyle='rgba(0,255,170,0.8)';
@@ -814,182 +809,8 @@
     ctx2d.stroke(); ctx2d.shadowBlur=0;
   }
 
-  // ── Recording ──────────────────────────────────────────────────────────────
-  let recSamples    = null;
-  let recSampleRate = 48000;
-  let recStream     = null;
-  let recProc       = null;
-  let recCtx        = null;
-  let recRunning    = false;
-  let recBuf        = [];
-
-  async function startRecord() {
-    if (recRunning) return;
-    recRunning = true;
-    recBuf = [];
-
-    const recBtn     = document.getElementById('recBtn');
-    const stopRecBtn = document.getElementById('stopRecBtn');
-    const dur        = parseInt(document.getElementById('recDurSlider').value);
-
-    recBtn.disabled              = true;
-    stopRecBtn.disabled          = false;
-    stopRecBtn.style.borderColor = 'var(--accent2)';
-    stopRecBtn.style.color       = 'var(--accent2)';
-
-    try {
-      recStream     = await navigator.mediaDevices.getUserMedia({
-        audio:getSelectedMicConstraints(),video:false});
-      recCtx        = new AudioContext();
-      recSampleRate = recCtx.sampleRate;
-
-      const src     = recCtx.createMediaStreamSource(recStream);
-      const recInGain = recCtx.createGain();
-      recInGain.gain.value = parseFloat(document.getElementById('inGainSlider').value);
-      recProc    = recCtx.createScriptProcessor(4096, 1, 1);
-      const sink = recCtx.createGain(); sink.gain.value = 0;
-      src.connect(recInGain); recInGain.connect(recProc); recProc.connect(sink); sink.connect(recCtx.destination);
-
-      let elapsed = 0;
-      recProc.onaudioprocess = (e) => {
-        const d = e.inputBuffer.getChannelData(0);
-        recBuf.push(new Float32Array(d));
-        elapsed += d.length / recSampleRate;
-        const dbgEl = document.getElementById('debugInfo');
-        if (dbgEl) dbgEl.textContent = `⏺ Recording... ${elapsed.toFixed(1)}s`;
-        if (elapsed >= dur) stopRecord();
-      };
-
-      // Safety auto-stop
-      setTimeout(() => { if (recRunning) stopRecord(); }, dur * 1000 + 500);
-
-    } catch(err) {
-      recRunning              = false;
-      recBtn.disabled         = false;
-      stopRecBtn.disabled     = true;
-      const dbgEl = document.getElementById('debugInfo');
-      if (dbgEl) dbgEl.textContent = 'Rec error: ' + err.message;
-    }
-  }
-
-  function stopRecord() {
-    if (!recRunning) return;
-    recRunning = false;
-
-    if (recProc)   { recProc.disconnect();                       recProc  = null; }
-    if (recStream) { recStream.getTracks().forEach(t=>t.stop()); recStream = null; }
-    if (recCtx)    { recCtx.close();                             recCtx   = null; }
-
-    const recBtn     = document.getElementById('recBtn');
-    const stopRecBtn = document.getElementById('stopRecBtn');
-    recBtn.disabled              = false;
-    recBtn.textContent           = '⏺ RECORD AGAIN';
-    stopRecBtn.disabled          = true;
-    stopRecBtn.style.borderColor = 'var(--dim)';
-    stopRecBtn.style.color       = 'var(--dim)';
-
-    // Flatten chunks
-    const totalN   = recBuf.reduce((s,c) => s+c.length, 0);
-    recSamples     = new Float32Array(totalN);
-    let off = 0;
-    for (const chunk of recBuf) { recSamples.set(chunk, off); off += chunk.length; }
-
-    // Stats
-    let peak=0, rms=0;
-    for (let i=0;i<recSamples.length;i++){
-      if(Math.abs(recSamples[i])>peak) peak=Math.abs(recSamples[i]);
-      rms+=recSamples[i]*recSamples[i];
-    }
-    rms = Math.sqrt(rms/recSamples.length);
-    const toDb   = v => v>0?(20*Math.log10(v)).toFixed(1)+'dB':'-∞';
-    const durSec = (recSamples.length/recSampleRate).toFixed(1);
-
-    const dbgEl = document.getElementById('debugInfo');
-    if (dbgEl) dbgEl.textContent =
-      `✓ Recorded ${durSec}s @ ${recSampleRate}Hz
-peak:${toDb(peak)}  rms:${toDb(rms)}
-Saving...`;
-
-    const dlBtn = document.getElementById('dlRecBtn');
-    dlBtn.disabled          = false;
-    dlBtn.style.borderColor = 'var(--accent)';
-    dlBtn.style.color       = 'var(--accent)';
-
-    // Auto-save immediately
-    downloadRecording();
-    const saveEl4 = document.getElementById('saveStatus');
-    if (saveEl4) saveEl4.textContent = `✓ Saved ${durSec}s @ ${recSampleRate}Hz  peak:${toDb(peak)}  rms:${toDb(rms)}`;
-  }
-
-  function saveLast() {
-    if (!rollingBuf) { alert('Start the app first'); return; }
-    const sr   = audioCtx?.sampleRate || 48000;
-    const size = rollingFull ? rollingSize : rollingW;
-    if (size === 0) { alert('No audio captured yet'); return; }
-
-    // Reconstruct in chronological order
-    const out = new Float32Array(size);
-    if (rollingFull) {
-      // Read from rollingW (oldest) to end, then 0 to rollingW-1
-      const tail = rollingSize - rollingW;
-      out.set(rollingBuf.slice(rollingW), 0);
-      out.set(rollingBuf.slice(0, rollingW), tail);
-    } else {
-      out.set(rollingBuf.slice(0, rollingW));
-    }
-
-    // Apply input gain so level matches what you heard
-    const gain = inGainNode?.gain.value || 1;
-    for (let i = 0; i < out.length; i++) out[i] = Math.max(-1, Math.min(1, out[i] * gain));
-
-    const secs = (out.length / sr).toFixed(1);
-    const dbgEl = document.getElementById('debugInfo');
-    const saveEl = document.getElementById('saveStatus');
-    if (saveEl) saveEl.textContent = `Saving last ${secs}s...`;
-
-    // Encode and download
-    const buf  = new ArrayBuffer(44 + out.length * 2);
-    const view = new DataView(buf);
-    const ws   = (o,s) => { for(let i=0;i<s.length;i++) view.setUint8(o+i,s.charCodeAt(i)); };
-    ws(0,'RIFF'); view.setUint32(4,36+out.length*2,true);
-    ws(8,'WAVE'); ws(12,'fmt '); view.setUint32(16,16,true);
-    view.setUint16(20,1,true); view.setUint16(22,1,true);
-    view.setUint32(24,sr,true); view.setUint32(28,sr*2,true);
-    view.setUint16(32,2,true); view.setUint16(34,16,true);
-    ws(36,'data'); view.setUint32(40,out.length*2,true);
-    for(let i=0;i<out.length;i++){
-      const s=Math.max(-1,Math.min(1,out[i]));
-      view.setInt16(44+i*2,s<0?s*0x8000:s*0x7FFF,true);
-    }
-    const a=document.createElement('a');
-    a.href=URL.createObjectURL(new Blob([buf],{type:'audio/wav'}));
-    a.download='last-10s.wav'; a.click();
-    const saveEl2 = document.getElementById('saveStatus');
-    if (saveEl2) saveEl2.textContent = `✓ Saved last-10s.wav (${secs}s @ ${sr}Hz)`;
-  }
-
-  function downloadRecording() {
-    if (!recSamples) return;
-    const buf  = new ArrayBuffer(44 + recSamples.length*2);
-    const view = new DataView(buf);
-    const ws   = (o,s) => { for(let i=0;i<s.length;i++) view.setUint8(o+i,s.charCodeAt(i)); };
-    ws(0,'RIFF'); view.setUint32(4,36+recSamples.length*2,true);
-    ws(8,'WAVE'); ws(12,'fmt '); view.setUint32(16,16,true);
-    view.setUint16(20,1,true); view.setUint16(22,1,true);
-    view.setUint32(24,recSampleRate,true); view.setUint32(28,recSampleRate*2,true);
-    view.setUint16(32,2,true); view.setUint16(34,16,true);
-    ws(36,'data'); view.setUint32(40,recSamples.length*2,true);
-    for(let i=0;i<recSamples.length;i++){
-      const s=Math.max(-1,Math.min(1,recSamples[i]));
-      view.setInt16(44+i*2,s<0?s*0x8000:s*0x7FFF,true);
-    }
-    const a=document.createElement('a');
-    a.href=URL.createObjectURL(new Blob([buf],{type:'audio/wav'}));
-    a.download='recorded.wav'; a.click();
-  }
-
   if ('serviceWorker' in navigator)
-    window.addEventListener('load', ()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
+    window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
 </script>
 </body>
 </html>
