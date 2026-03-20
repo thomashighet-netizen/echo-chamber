@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v1.3</div>
+    <div style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v1.4</div>
   </header>
 
   <!-- Delay control -->
@@ -648,46 +648,57 @@
       outGainNode = audioCtx.createGain();
       outGainNode.gain.value = vol;
 
+      // True speaker gain = outGain * inGain (what actually comes out the speaker)
+      // We need this to correctly scale the reference signal for subtraction.
+      // Note: we read this live each block so slider changes take effect immediately.
+      const getSpkGain = () => outGainNode.gain.value * inGainNode.gain.value;
+
       procNode = audioCtx.createScriptProcessor(4096, 1, 1);
       procNode.onaudioprocess = (e) => {
-        const inp = e.inputBuffer.getChannelData(0);
-        const out = e.outputBuffer.getChannelData(0);
+        const inp     = e.inputBuffer.getChannelData(0);
+        const out     = e.outputBuffer.getChannelData(0);
+        const spkGain = getSpkGain();
 
         let micPow = 0, refPow = 0, cleanPow = 0;
+
         for (let i = 0; i < inp.length; i++) {
 
-          // What did the speaker play latN samples ago?
+          // ── Step 1: look up what the speaker was emitting latN samples ago ──
+          // refBuf stores the raw delay output (pre-gain).
+          // Multiply by spkGain to get the actual acoustic level at the speaker.
           const refIdx    = (refW - latN + refBufSize * 4) % refBufSize;
-          const spkSample = refBuf[refIdx];
+          const spkSample = refBuf[refIdx] * spkGain;
 
-          // Subtract it from mic input
+          // ── Step 2: subtract from mic (which heard the speaker + the room) ──
+          // inp[i] has already been boosted by inGainNode, so it's at the same
+          // scale as spkSample. echoGain compensates for room attenuation.
           const clean = inp[i] - echoGain * spkSample;
 
-          micPow   += inp[i] * inp[i];
+          micPow   += inp[i]    * inp[i];
           refPow   += spkSample * spkSample;
-          cleanPow += clean * clean;
+          cleanPow += clean     * clean;
 
-          // Write clean signal into delay buffer
+          // ── Step 3: write clean signal into delay ring buffer ──
           ringBuf[wPos] = clean;
           wPos = (wPos + 1) % bufferSamples;
           if (!filled && wPos === 0) filled = true;
 
-          // Read delayed output
+          // ── Step 4: read delayed output (pre-gain) ──
           const outSample = filled ? ringBuf[rPos] : 0;
           rPos = (rPos + 1) % bufferSamples;
           out[i] = outSample;
 
-          // Store speaker output in ref buffer
-          refBuf[refW] = outSample * vol;
+          // ── Step 5: store raw output in ref buffer for next AEC iteration ──
+          refBuf[refW] = outSample;
           refW = (refW + 1) % refBufSize;
         }
 
         const n = inp.length;
-        const toDb = v => v > 0 ? (20*Math.log10(Math.sqrt(v/n))).toFixed(1) : '-inf';
+        const toDb = v => v > 0 ? (20*Math.log10(Math.sqrt(v/n))).toFixed(1) : '-∞';
         const dbgEl = document.getElementById('debugInfo');
         if (dbgEl) dbgEl.innerHTML =
-          `sr:${sr}&nbsp;&nbsp;latN:${latN}&nbsp;&nbsp;echoGain:${echoGain}<br>` +
-          `mic:${toDb(micPow)}dB&nbsp;&nbsp;ref:${toDb(refPow)}dB&nbsp;&nbsp;clean:${toDb(cleanPow)}dB`;
+          `sr:${sr} &nbsp; latN:${latN} &nbsp; echoGain:${echoGain} &nbsp; spkGain:${spkGain.toFixed(2)}<br>` +
+          `mic:${toDb(micPow)}dB &nbsp; ref:${toDb(refPow)}dB &nbsp; clean:${toDb(cleanPow)}dB`;
 
         updateProgress(wPos, bufferSamples, sr);
       };
@@ -702,7 +713,7 @@
       mainBtn.textContent = '■ Stop';
       mainBtn.classList.add('active', 'stop');
       statusDot.classList.add('live');
-      setStatus('Live — v0.8');
+      setStatus('Live — v1.4');
 
       // Show latN in debug so we can verify
       const dbgEl = document.getElementById('debugInfo');
