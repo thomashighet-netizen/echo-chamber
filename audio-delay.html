@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v5.4</div>
+    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v5.5</div>
   </header>
 
   <!-- Delay control -->
@@ -531,6 +531,32 @@
     document.getElementById('notchNote').textContent = 'notch: cleared';
   }
 
+  // Buffer flush cooldown — prevent rapid re-triggering
+  let lastFlushTime = 0;
+  const FLUSH_COOLDOWN_MS = 2000;
+
+  // Time-series metrics for debug report (last 5s, sampled every 250ms)
+  const TS_SAMPLES = 20;
+  let tsHistory = [];
+  let tsTimer = null;
+
+  function startTsHistory() {
+    tsTimer = setInterval(() => {
+      if (!running) return;
+      const db = v => v>0?(20*Math.log10(Math.sqrt(v))).toFixed(1):'-inf';
+      tsHistory.push({
+        t: Date.now(),
+        mic: db(dbgMic), ref: db(dbgRef), clean: db(dbgClean),
+        notches: notches.length, vol: (baseVolume*100).toFixed(0)
+      });
+      if (tsHistory.length > TS_SAMPLES) tsHistory.shift();
+    }, 250);
+  }
+  function stopTsHistory() {
+    if (tsTimer){clearInterval(tsTimer);tsTimer=null;}
+    tsHistory=[];
+  }
+
   // FFT feedback detector — runs every 100ms
   // Uses a circular buffer of recent output, finds dominant frequencies
   let fftBuf=null, fftPos=0;
@@ -610,16 +636,16 @@
         }
         notches = notches.slice(0, MAX_NOTCHES);
 
-        // Flush delay buffer when feedback detected — kills the loop instantly
-        if (top[0].ratio > 0.2 && ringBuf) {
+        // Flush delay buffer on strong feedback — with cooldown to prevent constant zeroing
+        const now = Date.now();
+        if (top[0].ratio > 0.4 && ringBuf && (now - lastFlushTime) > FLUSH_COOLDOWN_MS) {
+          lastFlushTime = now;
           ringBuf.fill(0);
-          refBuf && refBuf.fill(0);
-          // Brief mute while buffer clears
           if (outGainNode && audioCtx) {
             outGainNode.gain.setTargetAtTime(0, audioCtx.currentTime, 0.01);
             setTimeout(() => {
-              if (outGainNode && audioCtx) outGainNode.gain.setTargetAtTime(baseVolume, audioCtx.currentTime, 0.15);
-            }, 80);
+              if (outGainNode && audioCtx) outGainNode.gain.setTargetAtTime(baseVolume, audioCtx.currentTime, 0.2);
+            }, 100);
           }
         }
 
@@ -894,7 +920,11 @@
           rms=Math.sqrt(rms/out.length);
           return{durationS:(size/sr).toFixed(1),peakDb:peak>0?(20*Math.log10(peak)).toFixed(1)+'dB':'-inf',rmsDb:rms>0?(20*Math.log10(rms)).toFixed(1)+'dB':'-inf'};
         })(),
-        diagnosis:dbgRef===0?'REF EMPTY':dbgClean<dbgMic*0.5?'AEC WORKING':'Not cancelling enough'
+        diagnosis:dbgRef===0?'REF EMPTY':dbgClean<dbgMic*0.5?'AEC WORKING':'Not cancelling enough',
+        timeSeries: tsHistory.map(s=>({
+          mic:s.mic, ref:s.ref, clean:s.clean,
+          notches:s.notches, vol:s.vol+'%'
+        }))
       };
       const json=JSON.stringify(bundle,null,2);
       const blob=new Blob([json],{type:'application/json'});
@@ -1006,15 +1036,17 @@
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v5.4');
+      setStatus('Live — v5.5');
       startDebugTimer();
       startFftDetector(sr);
+      startTsHistory();
       drawViz();
     }catch(err){setStatus('Error: '+err.message);console.error(err);}
   }
 
   function stop(){
     stopFftDetector();
+    stopTsHistory();
     stopDebugTimer();
     if(procNode){procNode.disconnect();procNode=null;}
     if(inGainNode){inGainNode.disconnect();inGainNode=null;}
