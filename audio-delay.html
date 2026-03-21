@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v3.1</div>
+    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v3.2</div>
   </header>
 
   <!-- Delay control -->
@@ -945,15 +945,15 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
       const inGain   = parseFloat(inGainSlider.value);
 
       latN        = Math.floor(parseInt(latencySlider.value)/1000*sr);
-      bufN        = Math.floor(delaySec*sr);
-      // Allocate extra latN samples so we can look back past the delay
-      const ringTotal = bufN + latN + 4096; // extra headroom
-      ringBuf     = new Float32Array(ringTotal);
-      wPos=0; rPos=bufN; filled=false; // rPos starts bufN ahead of wPos
+      bufN    = Math.floor(delaySec*sr);
+      ringBuf = new Float32Array(bufN);
+      wPos=0; rPos=0; filled=false;
 
-      refBufSize  = Math.max(Math.floor(sr*0.6), 32768);
-      refBuf      = new Float32Array(refBufSize);
-      refW=0; refReady=false; refSamplesWritten=0;
+      // Small ref buffer: records exactly what the speaker plays (out[i] * outGain)
+      // We look back latN samples to find what the mic is hearing right now
+      refBufSize = Math.max(latN * 4, 32768);
+      refBuf     = new Float32Array(refBufSize);
+      refW = 0;
 
       rollingSize = Math.floor(10*sr);
       rollingBuf  = new Float32Array(rollingSize);
@@ -985,32 +985,35 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
           rollingW = (rollingW+1)%rollingSize;
           if (!rollingFull && rollingW===0) rollingFull=true;
 
-          // 2. What did the speaker play right now?
-          // The speaker is playing what we wrote (bufN + latN) samples ago.
-          // Look that far back in the ring buffer.
-          const ringTotal = ringBuf.length;
-          const spkLookback = bufN + latN;
-          const spkIdx  = (wPos - spkLookback + ringTotal * 4) % ringTotal;
-          const spkAtMic = ringBuf[spkIdx] * outGain * echoGain;
+          // 2. What is the speaker playing right now?
+          // refBuf stores out[i]*outGain — the true acoustic output.
+          // latN samples ago is when it was emitted; mic hears it now.
+          const refIdx   = (refW - latN + refBufSize * 4) % refBufSize;
+          const spkAtMic = refBuf[refIdx] * echoGain;
 
-          // 3. Subtract speaker echo from mic
+          // 3. Subtract from mic
           const clean = micRaw - spkAtMic;
 
-          micPow   += micRaw*micRaw;
-          refPow   += spkAtMic*spkAtMic;
-          cleanPow += clean*clean;
+          micPow   += micRaw * micRaw;
+          refPow   += spkAtMic * spkAtMic;
+          cleanPow += clean * clean;
 
-          // 4. Write to ring buffer
-          ringBuf[wPos] = clean;
-          wPos = (wPos+1) % ringTotal;
+          // 4. Write ORIGINAL mic (not cleaned) to delay buffer
+          // This ensures the delay buffer always contains real mic audio,
+          // not a version that's had subtraction applied — no circular dependency.
+          ringBuf[wPos] = micRaw;
+          wPos = (wPos + 1) % bufN;
+          if (!filled && wPos === 0) filled = true;
 
-          // 5. Read delayed output (rPos is always bufN ahead of wPos at start)
-          const outSample = ringBuf[rPos];
-          rPos = (rPos+1) % ringTotal;
+          // 5. Read delayed output
+          const outSample = filled ? ringBuf[rPos] : 0;
+          rPos = (rPos + 1) % bufN;
           out[i] = outSample;
 
-          // Track filled state for UI
-          if (!filled && wPos === bufN) filled = true;
+          // 6. Record what the speaker is actually playing into refBuf
+          // This is the ground truth — no feedback loop possible
+          refBuf[refW] = outSample * outGain;
+          refW = (refW + 1) % refBufSize;
         }
 
         // Update debug vars (read by UI timer)
@@ -1023,7 +1026,7 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
           bufferLabel.textContent=`Buffer: ${delaySec.toFixed(1)}s / ${delaySec.toFixed(1)}s`;
         } else {
           bufferFill.style.width=((wPos/bufN)*100)+'%';
-          bufferLabel.textContent=`Buffer: ${(wPos/sr).toFixed(1)}s / ${delaySec.toFixed(1)}s (filling...)`;
+          bufferLabel.textContent=`Buffer: ${(wPos/sr).toFixed(1)}s / ${delaySec.toFixed(1)}s`;
         }
       };
 
@@ -1037,7 +1040,7 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v3.1');
+      setStatus('Live — v3.2');
       startDebugTimer();
       drawViz();
 
