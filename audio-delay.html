@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v4.2</div>
+    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v4.3</div>
   </header>
 
   <!-- Delay control -->
@@ -449,6 +449,9 @@
 
   <!-- Save last button -->
   <button class="btn" id="saveBtn" onclick="saveLast()" style="margin-top:10px;border-color:var(--warn);color:var(--warn);">⚡ SAVE LAST 10s</button>
+  <div style="display:flex;gap:8px;margin-top:8px;margin-bottom:0;">
+    <button onclick="duckActive=!duckActive;this.textContent=duckActive?'🦆 DUCK ON':'🦆 DUCK OFF';this.style.borderColor=duckActive?'var(--accent)':'var(--dim)';this.style.color=duckActive?'var(--accent)':'var(--dim)';" style="font-family:'Share Tech Mono',monospace;font-size:11px;letter-spacing:0.15em;background:transparent;border:1px solid var(--accent);color:var(--accent);padding:8px 12px;border-radius:3px;cursor:pointer;flex:1;">🦆 DUCK ON</button>
+  </div>
   <button class="btn" id="threshBtn" onclick="detectFeedbackThreshold()" style="margin-top:8px;border-color:#44aaff;color:#44aaff;">🔧 AUTO SETUP (latency + safe volume)</button>
   <div style="margin-top:4px;font-size:11px;color:#44aaff;padding:2px;" id="threshNote">Measures latency and finds safe volume automatically. ~20s. Keep quiet.</div>
   <button class="btn" id="debugUploadBtn" onclick="uploadDebugBundle()" style="margin-top:8px;border-color:#44aaff;color:#44aaff;">📡 UPLOAD DEBUG REPORT</button>
@@ -499,6 +502,15 @@
 
   let dbgMic = 0, dbgRef = 0, dbgClean = 0, dbgSpkGain = 1, dbgSR = 0;
 
+  // Dynamic ducking — reduces output when mic level spikes to prevent feedback
+  let duckActive  = true;   // enabled by default
+  let duckGain    = 1.0;    // current duck multiplier (1=full, 0=muted)
+  let duckTarget  = 1.0;    // target we're moving toward
+  let baseVolume  = 0.8;    // the "safe" volume set by auto setup
+  const DUCK_ATTACK  = 0.95;  // fast attack (per-block)
+  const DUCK_RELEASE = 0.002; // slow release (per-block)
+  const DUCK_THRESH  = 0.05;  // mic RMS threshold to trigger duck (linear)
+
   // ── DOM ────────────────────────────────────────────────────────────────────
   const delaySlider   = document.getElementById('delaySlider');
   const volumeSlider  = document.getElementById('volumeSlider');
@@ -544,7 +556,8 @@
   volumeSlider.addEventListener('input', () => {
     volVal.textContent = volumeSlider.value;
     fill(volumeSlider, parseInt(volumeSlider.value));
-    if (outGainNode) outGainNode.gain.setTargetAtTime(parseInt(volumeSlider.value)/100, audioCtx.currentTime, 0.05);
+    baseVolume = parseInt(volumeSlider.value)/100;
+    if (outGainNode && !duckActive) outGainNode.gain.setTargetAtTime(baseVolume, audioCtx.currentTime, 0.05);
   });
   inGainSlider.addEventListener('input', () => {
     const v = parseFloat(inGainSlider.value);
@@ -883,6 +896,7 @@
       const vol      = parseInt(volumeSlider.value)/100;
       const inGain   = parseFloat(inGainSlider.value);
       latN = Math.floor(parseInt(latencySlider.value)/1000*sr);
+      baseVolume = vol;
       echoGain = parseFloat(echoSlider.value);
 
       bufN    = Math.floor(delaySec*sr);
@@ -947,6 +961,21 @@
         const n=inp.length;
         dbgMic=micPow/n; dbgRef=refPow/n; dbgClean=cleanPow/n; dbgSpkGain=oGain*iGain;
 
+        // Dynamic ducking: if mic suddenly loud, reduce output to prevent loop runaway
+        if (duckActive) {
+          const micRMS = Math.sqrt(micPow/n);
+          if (micRMS > DUCK_THRESH) {
+            // Spike detected — duck output fast
+            duckTarget = 0.2;
+          } else {
+            // Quiet — slowly restore
+            duckTarget = 1.0;
+          }
+          // Smooth toward target
+          duckGain += (duckTarget - duckGain) * (duckTarget < duckGain ? DUCK_ATTACK : DUCK_RELEASE);
+          outGainNode.gain.setTargetAtTime(baseVolume * duckGain, audioCtx.currentTime, 0.01);
+        }
+
         if(filled){
           bufferFill.style.width='100%';
           bufferLabel.textContent=`Buffer: ${delaySec.toFixed(1)}s / ${delaySec.toFixed(1)}s`;
@@ -966,7 +995,7 @@
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v4.2');
+      setStatus('Live — v4.3');
       startDebugTimer();
       drawViz();
     } catch(err){
