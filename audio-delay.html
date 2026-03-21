@@ -443,6 +443,8 @@
 
   <!-- Save last button -->
   <button class="btn" id="saveBtn" onclick="saveLast()" style="margin-top:10px;border-color:var(--warn);color:var(--warn);">⚡ SAVE LAST 10s</button>
+  <button class="btn" id="debugUploadBtn" onclick="uploadDebugBundle()" style="margin-top:8px;border-color:#44aaff;color:#44aaff;">📡 UPLOAD DEBUG REPORT</button>
+  <div style="margin-top:8px;background:#0a0a0a;border:1px solid #222;border-radius:4px;padding:12px;font-size:13px;color:#44aaff;word-break:break-all;display:none;" id="uploadResult">—</div>
   <div style="margin-top:12px;background:#111;border:2px solid var(--accent);border-radius:4px;padding:12px;font-size:14px;letter-spacing:0.1em;color:var(--accent);line-height:2;word-break:break-all;" id="debugInfo">—</div>
   <div style="margin-top:6px;font-size:12px;letter-spacing:0.1em;color:var(--warn);padding:4px 2px;" id="saveStatus"></div>
 
@@ -658,6 +660,133 @@
     encodeAndDownload(out, sr, 'last-10s.wav');
     const secs = (size/sr).toFixed(1);
     document.getElementById('saveStatus').textContent = `✓ Saved last-10s.wav (${secs}s)`;
+  }
+
+  async function uploadDebugBundle() {
+    const btn = document.getElementById('debugUploadBtn');
+    const result = document.getElementById('uploadResult');
+    result.style.display = 'block';
+    result.textContent = 'Building debug report...';
+    btn.disabled = true;
+
+    try {
+      // 1. Collect settings
+      const settings = {
+        delayS:       parseFloat(delaySlider.value),
+        outputVolPct: parseInt(volumeSlider.value),
+        inputGainX:   parseFloat(inGainSlider.value),
+        latencyMs:    parseInt(latencySlider.value),
+        echoGain:     echoGain,
+        sampleRate:   audioCtx?.sampleRate || 48000,
+        latNSamples:  latN,
+        version:      document.querySelector('[style*="background:var(--accent)"]')?.textContent?.trim() || 'unknown'
+      };
+
+      // 2. Collect last debug metrics
+      const db = v => v > 0 ? (20*Math.log10(Math.sqrt(v))).toFixed(1)+'dB' : '-inf';
+      const metrics = {
+        micRMS:   db(dbgMic),
+        refRMS:   db(dbgRef),
+        cleanRMS: db(dbgClean),
+        spkGain:  dbgSpkGain.toFixed(3),
+        refIsEmpty: dbgRef === 0,
+        cancellationWorking: dbgRef > 0 && dbgClean < dbgMic
+      };
+
+      // 3. Encode last 10s audio as base64 WAV
+      let audioB64 = null;
+      let audioDurS = 0;
+      let audioPeakDb = '-inf';
+      let audioRmsDb = '-inf';
+
+      if (rollingBuf && (rollingFull || rollingW > 0)) {
+        const sr   = audioCtx?.sampleRate || 48000;
+        const size = rollingFull ? rollingSize : rollingW;
+        const out  = new Float32Array(size);
+        if (rollingFull) {
+          out.set(rollingBuf.slice(rollingW));
+          out.set(rollingBuf.slice(0, rollingW), rollingSize - rollingW);
+        } else {
+          out.set(rollingBuf.slice(0, rollingW));
+        }
+        const gain = inGainNode?.gain.value || 1;
+        let peak=0, rms=0;
+        for (let i=0;i<out.length;i++) {
+          out[i] = Math.max(-1,Math.min(1,out[i]*gain));
+          if(Math.abs(out[i])>peak) peak=Math.abs(out[i]);
+          rms+=out[i]*out[i];
+        }
+        rms=Math.sqrt(rms/out.length);
+        audioDurS  = (size/sr).toFixed(1);
+        audioPeakDb = peak>0?(20*Math.log10(peak)).toFixed(1)+'dB':'-inf';
+        audioRmsDb  = rms>0?(20*Math.log10(rms)).toFixed(1)+'dB':'-inf';
+
+        // Encode WAV
+        const wavBuf = new ArrayBuffer(44+out.length*2);
+        const v=new DataView(wavBuf);
+        const ws=(o,s)=>{for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i));};
+        ws(0,'RIFF');v.setUint32(4,36+out.length*2,true);
+        ws(8,'WAVE');ws(12,'fmt ');v.setUint32(16,16,true);
+        v.setUint16(20,1,true);v.setUint16(22,1,true);
+        v.setUint32(24,sr,true);v.setUint32(28,sr*2,true);
+        v.setUint16(32,2,true);v.setUint16(34,16,true);
+        ws(36,'data');v.setUint32(40,out.length*2,true);
+        for(let i=0;i<out.length;i++){
+          const s=Math.max(-1,Math.min(1,out[i]));
+          v.setInt16(44+i*2,s<0?s*0x8000:s*0x7FFF,true);
+        }
+        // Base64 encode
+        const bytes = new Uint8Array(wavBuf);
+        let binary = '';
+        for(let i=0;i<bytes.length;i++) binary+=String.fromCharCode(bytes[i]);
+        audioB64 = btoa(binary);
+      }
+
+      const bundle = {
+        timestamp: new Date().toISOString(),
+        settings,
+        metrics,
+        audio: {
+          durationS:  audioDurS,
+          peakDb:     audioPeakDb,
+          rmsDb:      audioRmsDb,
+          wavBase64:  audioB64
+        },
+        diagnosis: {
+          refBufferEmpty:    metrics.refIsEmpty,
+          feedbackRisk:      !metrics.cancellationWorking,
+          suggestedAction:   metrics.refIsEmpty
+            ? 'ref buffer is empty — subtraction not working, check latN'
+            : metrics.cancellationWorking
+              ? 'AEC appears to be working'
+              : 'ref populated but clean >= mic — echoGain may be wrong'
+        }
+      };
+
+      result.textContent = 'Uploading to file.io...';
+
+      // Upload as JSON to file.io (free, no account, expires after 1 download)
+      const json = JSON.stringify(bundle, null, 2);
+      const blob = new Blob([json], {type:'application/json'});
+      const fd   = new FormData();
+      fd.append('file', blob, 'echo-debug.json');
+      fd.append('expires', '1d');
+
+      const resp = await fetch('https://file.io', { method:'POST', body:fd });
+      const data = await resp.json();
+
+      if (data.success && data.link) {
+        result.innerHTML = `✓ Upload complete!<br><br><strong style="font-size:16px;">${data.link}</strong><br><br>Paste this URL into your PC chat with Claude.`;
+      } else {
+        throw new Error(data.message || 'Upload failed');
+      }
+
+    } catch(err) {
+      // Fallback — just show JSON summary without audio
+      result.textContent = 'Upload failed: ' + err.message + '\n\nCheck console for details.';
+      console.error(err);
+    }
+    btn.disabled = false;
   }
 
   function encodeAndDownload(samples, sr, filename) {
