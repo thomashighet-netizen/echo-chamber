@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v5.6</div>
+    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v5.7</div>
   </header>
 
   <!-- Delay control -->
@@ -361,7 +361,7 @@
       <span class="label">Input Gain</span>
       <span><span class="value-display" id="inGainVal" style="font-size:20px;color:var(--accent)">5</span><span class="unit">x</span></span>
     </div>
-    <input type="range" id="inGainSlider" min="1" max="20" step="0.5" value="5">
+    <input type="range" id="inGainSlider" min="1" max="20" step="0.5" value="5" data-locked="true">
     <div class="ticks">
       <span class="tick">1x</span>
       <span class="tick">5x</span>
@@ -534,6 +534,37 @@
   // Buffer flush cooldown — prevent rapid re-triggering
   let lastFlushTime = 0;
   const FLUSH_COOLDOWN_MS = 2000;
+
+  // Slow adaptive echoGain — nudges up/down based on signal growth
+  let adaptEchoTimer = null;
+  let prevAdaptRMS = 0;
+
+  function startAdaptEcho() {
+    stopAdaptEcho();
+    adaptEchoTimer = setInterval(() => {
+      if (!running || dbgMic <= 0) return;
+      const curRMS = Math.sqrt(dbgMic);
+      if (prevAdaptRMS > 0.005) { // only adapt when there's actual signal
+        const growth = curRMS / prevAdaptRMS;
+        if (growth > 1.05) {
+          // Signal growing — increase echoGain slightly to cancel more
+          echoGain = Math.min(2.0, echoGain * 1.05);
+          echoSlider.value = echoGain.toFixed(2);
+          echoVal.textContent = echoGain.toFixed(2);
+        } else if (growth < 0.95 && echoGain > 0.1) {
+          // Signal shrinking — we may be over-cancelling, nudge back slightly
+          echoGain = Math.max(0.05, echoGain * 0.99);
+          echoSlider.value = echoGain.toFixed(2);
+          echoVal.textContent = echoGain.toFixed(2);
+        }
+      }
+      prevAdaptRMS = curRMS * 0.3 + prevAdaptRMS * 0.7; // slow tracker
+    }, 1000);
+  }
+  function stopAdaptEcho() {
+    if (adaptEchoTimer){clearInterval(adaptEchoTimer);adaptEchoTimer=null;}
+    prevAdaptRMS=0;
+  }
 
   // Time-series metrics for debug report (last 5s, sampled every 250ms)
   const TS_SAMPLES = 20;
@@ -894,7 +925,7 @@
           return{durationS:(size/sr).toFixed(1),peakDb:peak>0?(20*Math.log10(peak)).toFixed(1)+'dB':'-inf',rmsDb:rms>0?(20*Math.log10(rms)).toFixed(1)+'dB':'-inf'};
         })(),
         diagnosis:dbgRef===0?'REF EMPTY':dbgClean<dbgMic*0.5?'AEC WORKING':'Not cancelling enough',
-        timeSeries: tsHistory.map(s=>({
+        timeSeries: [...tsHistory].map(s=>({
           mic:s.mic, ref:s.ref, clean:s.clean,
           notches:s.notches, vol:s.vol+'%'
         }))
@@ -1013,16 +1044,18 @@
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v5.6');
+      setStatus('Live — v5.7');
       startDebugTimer();
       startFftDetector(sr);
       startTsHistory();
+      startAdaptEcho();
       drawViz();
     }catch(err){setStatus('Error: '+err.message);console.error(err);}
   }
 
   function stop(){
     stopFftDetector();
+    stopAdaptEcho();
     stopTsHistory();
     stopDebugTimer();
     if(procNode){procNode.disconnect();procNode=null;}
