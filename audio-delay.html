@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v2.2</div>
+    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v2.3</div>
   </header>
 
   <!-- Delay control -->
@@ -642,172 +642,278 @@
   }
 
   // ── Save last 10s ──────────────────────────────────────────────────────────
-  function saveLast() {
-    if (!rollingBuf || (!rollingFull && rollingW === 0)) return;
-    const sr   = audioCtx?.sampleRate || 48000;
-    const size = rollingFull ? rollingSize : rollingW;
-    const out  = new Float32Array(size);
-    if (rollingFull) {
-      out.set(rollingBuf.slice(rollingW));
-      out.set(rollingBuf.slice(0, rollingW), rollingSize - rollingW);
-    } else {
-      out.set(rollingBuf.slice(0, rollingW));
-    }
-    // Apply input gain so saved level matches what was heard
-    const gain = inGainNode?.gain.value || 1;
-    for (let i=0;i<out.length;i++) out[i] = Math.max(-1,Math.min(1,out[i]*gain));
-
-    encodeAndDownload(out, sr, 'last-10s.wav');
-    const secs = (size/sr).toFixed(1);
-    document.getElementById('saveStatus').textContent = `✓ Saved last-10s.wav (${secs}s)`;
-  }
-
   async function uploadDebugBundle() {
-    const btn = document.getElementById('debugUploadBtn');
+    const btn    = document.getElementById('debugUploadBtn');
     const result = document.getElementById('uploadResult');
     result.style.display = 'block';
-    result.textContent = 'Building debug report...';
+    result.textContent   = 'Building report...';
     btn.disabled = true;
 
     try {
-      // 1. Collect settings
-      const settings = {
-        delayS:       parseFloat(delaySlider.value),
-        outputVolPct: parseInt(volumeSlider.value),
-        inputGainX:   parseFloat(inGainSlider.value),
-        latencyMs:    parseInt(latencySlider.value),
-        echoGain:     echoGain,
-        sampleRate:   audioCtx?.sampleRate || 48000,
-        latNSamples:  latN,
-        version:      document.querySelector('[style*="background:var(--accent)"]')?.textContent?.trim() || 'unknown'
-      };
-
-      // 2. Collect last debug metrics
+      const sr = audioCtx?.sampleRate || 48000;
       const db = v => v > 0 ? (20*Math.log10(Math.sqrt(v))).toFixed(1)+'dB' : '-inf';
-      const metrics = {
-        micRMS:   db(dbgMic),
-        refRMS:   db(dbgRef),
-        cleanRMS: db(dbgClean),
-        spkGain:  dbgSpkGain.toFixed(3),
-        refIsEmpty: dbgRef === 0,
-        cancellationWorking: dbgRef > 0 && dbgClean < dbgMic
-      };
-
-      // 3. Encode last 10s audio as base64 WAV
-      let audioB64 = null;
-      let audioDurS = 0;
-      let audioPeakDb = '-inf';
-      let audioRmsDb = '-inf';
-
-      if (rollingBuf && (rollingFull || rollingW > 0)) {
-        const sr   = audioCtx?.sampleRate || 48000;
-        const size = rollingFull ? rollingSize : rollingW;
-        const out  = new Float32Array(size);
-        if (rollingFull) {
-          out.set(rollingBuf.slice(rollingW));
-          out.set(rollingBuf.slice(0, rollingW), rollingSize - rollingW);
-        } else {
-          out.set(rollingBuf.slice(0, rollingW));
-        }
-        const gain = inGainNode?.gain.value || 1;
-        let peak=0, rms=0;
-        for (let i=0;i<out.length;i++) {
-          out[i] = Math.max(-1,Math.min(1,out[i]*gain));
-          if(Math.abs(out[i])>peak) peak=Math.abs(out[i]);
-          rms+=out[i]*out[i];
-        }
-        rms=Math.sqrt(rms/out.length);
-        audioDurS  = (size/sr).toFixed(1);
-        audioPeakDb = peak>0?(20*Math.log10(peak)).toFixed(1)+'dB':'-inf';
-        audioRmsDb  = rms>0?(20*Math.log10(rms)).toFixed(1)+'dB':'-inf';
-
-        // Encode WAV
-        const wavBuf = new ArrayBuffer(44+out.length*2);
-        const v=new DataView(wavBuf);
-        const ws=(o,s)=>{for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i));};
-        ws(0,'RIFF');v.setUint32(4,36+out.length*2,true);
-        ws(8,'WAVE');ws(12,'fmt ');v.setUint32(16,16,true);
-        v.setUint16(20,1,true);v.setUint16(22,1,true);
-        v.setUint32(24,sr,true);v.setUint32(28,sr*2,true);
-        v.setUint16(32,2,true);v.setUint16(34,16,true);
-        ws(36,'data');v.setUint32(40,out.length*2,true);
-        for(let i=0;i<out.length;i++){
-          const s=Math.max(-1,Math.min(1,out[i]));
-          v.setInt16(44+i*2,s<0?s*0x8000:s*0x7FFF,true);
-        }
-        // Base64 encode
-        const bytes = new Uint8Array(wavBuf);
-        let binary = '';
-        for(let i=0;i<bytes.length;i++) binary+=String.fromCharCode(bytes[i]);
-        audioB64 = btoa(binary);
-      }
 
       const bundle = {
         timestamp: new Date().toISOString(),
-        settings,
-        metrics,
-        audio: {
-          durationS:  audioDurS,
-          peakDb:     audioPeakDb,
-          rmsDb:      audioRmsDb,
-          wavBase64:  audioB64
+        version:   '2.3',
+        settings: {
+          delayS:       parseFloat(delaySlider.value),
+          outputVolPct: parseInt(volumeSlider.value),
+          inputGainX:   parseFloat(inGainSlider.value),
+          latencyMs:    parseInt(latencySlider.value),
+          echoGain,
+          sampleRate:   sr,
+          latNSamples:  latN
         },
-        diagnosis: {
-          refBufferEmpty:    metrics.refIsEmpty,
-          feedbackRisk:      !metrics.cancellationWorking,
-          suggestedAction:   metrics.refIsEmpty
-            ? 'ref buffer is empty — subtraction not working, check latN'
-            : metrics.cancellationWorking
-              ? 'AEC appears to be working'
-              : 'ref populated but clean >= mic — echoGain may be wrong'
-        }
+        metrics: {
+          micRMS:   db(dbgMic),
+          refRMS:   db(dbgRef),
+          cleanRMS: db(dbgClean),
+          spkGain:  dbgSpkGain.toFixed(3),
+          refEmpty: dbgRef === 0,
+          aecWorking: dbgRef > 0 && dbgClean < dbgMic * 0.5
+        },
+        audio: (()=>{
+          if (!rollingBuf || (!rollingFull && rollingW===0)) return {note:'no audio captured'};
+          const size = rollingFull ? rollingSize : rollingW;
+          const out  = new Float32Array(size);
+          if (rollingFull) { out.set(rollingBuf.slice(rollingW)); out.set(rollingBuf.slice(0,rollingW),rollingSize-rollingW); }
+          else out.set(rollingBuf.slice(0,rollingW));
+          const gain = inGainNode?.gain.value || 1;
+          let peak=0,rms=0;
+          for(let i=0;i<out.length;i++){out[i]=Math.max(-1,Math.min(1,out[i]*gain));if(Math.abs(out[i])>peak)peak=Math.abs(out[i]);rms+=out[i]*out[i];}
+          rms=Math.sqrt(rms/out.length);
+          return {
+            durationS: (size/sr).toFixed(1),
+            peakDb:    peak>0?(20*Math.log10(peak)).toFixed(1)+'dB':'-inf',
+            rmsDb:     rms>0?(20*Math.log10(rms)).toFixed(1)+'dB':'-inf'
+          };
+        })(),
+        diagnosis: dbgRef===0
+          ? 'REF BUFFER EMPTY — subtraction not working, latN may be wrong'
+          : (dbgClean < dbgMic * 0.5)
+            ? 'AEC working — clean is lower than mic'
+            : 'Ref populated but not cancelling — echoGain or latN off'
       };
 
-      result.textContent = 'Uploading to file.io...';
-
-      // Upload as JSON to file.io (free, no account, expires after 1 download)
       const json = JSON.stringify(bundle, null, 2);
       const blob = new Blob([json], {type:'application/json'});
-      const fd   = new FormData();
-      fd.append('file', blob, 'echo-debug.json');
-      fd.append('expires', '1d');
+      result.textContent = 'Uploading...';
 
-      const resp = await fetch('https://file.io', { method:'POST', body:fd });
-      const data = await resp.json();
+      // Try 0x0.st
+      let url = null;
+      try {
+        const fd = new FormData(); fd.append('file', blob, 'echo-debug.json');
+        const r  = await fetch('https://0x0.st', {method:'POST', body:fd});
+        if (r.ok) url = (await r.text()).trim();
+      } catch(e) { console.warn('0x0.st:', e); }
 
-      if (data.success && data.link) {
-        result.innerHTML = `✓ Upload complete!<br><br><strong style="font-size:16px;">${data.link}</strong><br><br>Paste this URL into your PC chat with Claude.`;
-      } else {
-        throw new Error(data.message || 'Upload failed');
+      // Try transfer.sh
+      if (!url) {
+        try {
+          const r = await fetch('https://transfer.sh/echo-debug.json', {method:'PUT', body:blob, headers:{'Max-Days':'1'}});
+          if (r.ok) url = (await r.text()).trim();
+        } catch(e) { console.warn('transfer.sh:', e); }
       }
 
+      if (url) {
+        result.innerHTML = `✓ Uploaded!<br><br><strong style="font-size:17px;">${url}</strong><br><br>Paste this URL into Claude chat on your PC.`;
+      } else {
+        // Fallback: show text summary to copy manually
+        result.innerHTML = `Upload failed. Copy this summary instead:<br><br><textarea style="width:100%;height:140px;background:#0a0a0a;color:#44aaff;border:1px solid #333;font-size:10px;padding:6px;font-family:monospace;" readonly>${json.replace(/"wavBase64":.+/,'')}</textarea>`;
+      }
     } catch(err) {
-      // Fallback — just show JSON summary without audio
-      result.textContent = 'Upload failed: ' + err.message + '\n\nCheck console for details.';
+      result.textContent = 'Error: ' + err.message;
       console.error(err);
     }
     btn.disabled = false;
   }
 
-  function encodeAndDownload(samples, sr, filename) {
-    const buf=new ArrayBuffer(44+samples.length*2);
-    const v=new DataView(buf);
-    const ws=(o,s)=>{for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i));};
-    ws(0,'RIFF');v.setUint32(4,36+samples.length*2,true);
-    ws(8,'WAVE');ws(12,'fmt ');v.setUint32(16,16,true);
-    v.setUint16(20,1,true);v.setUint16(22,1,true);
-    v.setUint32(24,sr,true);v.setUint32(28,sr*2,true);
-    v.setUint16(32,2,true);v.setUint16(34,16,true);
-    ws(36,'data');v.setUint32(40,samples.length*2,true);
-    for(let i=0;i<samples.length;i++){
-      const s=Math.max(-1,Math.min(1,samples[i]));
-      v.setInt16(44+i*2,s<0?s*0x8000:s*0x7FFF,true);
+  function saveLast() {
+    if (!rollingBuf || (!rollingFull && rollingW === 0)) return;
+    const sr   = audioCtx?.sampleRate || 48000;
+    const size = rollingFull ? rollingSize : rollingW;
+
+    // Reconstruct audio in chronological order
+    const audio = new Float32Array(size);
+    if (rollingFull) {
+      audio.set(rollingBuf.slice(rollingW));
+      audio.set(rollingBuf.slice(0, rollingW), rollingSize - rollingW);
+    } else {
+      audio.set(rollingBuf.slice(0, rollingW));
     }
+    const gain = inGainNode?.gain.value || 1;
+    for (let i=0;i<audio.length;i++) audio[i] = Math.max(-1,Math.min(1,audio[i]*gain));
+
+    // Stats
+    let peak=0, rmsAcc=0, clipped=0;
+    for (let i=0;i<audio.length;i++){
+      const a=Math.abs(audio[i]);
+      if(a>peak) peak=a;
+      rmsAcc+=audio[i]*audio[i];
+      if(a>0.99) clipped++;
+    }
+    const rms = Math.sqrt(rmsAcc/audio.length);
+    const db  = v => v>0?(20*Math.log10(v)).toFixed(1)+'dB':'-inf';
+
+    // Per-second RMS
+    const perSec = [];
+    for (let s=0;s<Math.floor(audio.length/sr);s++){
+      const c=audio.slice(s*sr,(s+1)*sr);
+      const r=Math.sqrt(c.reduce((a,v)=>a+v*v,0)/c.length);
+      perSec.push({s:s+1, db:db(r), rms:r});
+    }
+
+    // Feedback detection
+    const thirds=[0,1,2].map(t=>{
+      const c=audio.slice(Math.floor(t*audio.length/3),Math.floor((t+1)*audio.length/3));
+      return Math.sqrt(c.reduce((a,v)=>a+v*v,0)/c.length);
+    });
+    const growing = thirds[2]>thirds[0]*1.5;
+
+    // AEC metrics
+    const dbgDb = v => v>0?(20*Math.log10(Math.sqrt(v))).toFixed(1)+'dB':'-inf';
+    const aec = {
+      sampleRate:  sr,
+      latN:        latN,
+      latMs:       (latN/sr*1000).toFixed(1),
+      spkGain:     dbgSpkGain.toFixed(3),
+      echoGain:    echoGain,
+      mic:         dbgDb(dbgMic),
+      ref:         dbgDb(dbgRef),
+      clean:       dbgDb(dbgClean),
+      refActive:   dbgRef > 0,
+      cancelling:  dbgRef > 0 && dbgClean < dbgMic,
+    };
+
+    // Diagnosis
+    let diagnosis, diagColor;
+    if (!aec.refActive) {
+      diagnosis  = '⚠ REF BUFFER EMPTY — subtraction is doing nothing. The reference signal is not being populated. Check latN vs refBufSize.';
+      diagColor  = '#ff4455';
+    } else if (growing) {
+      diagnosis  = '⚠ FEEDBACK LOOP DETECTED — signal is growing. AEC is not cancelling enough. Try increasing echoGain or adjusting latency.';
+      diagColor  = '#ff4455';
+    } else if (aec.cancelling) {
+      diagnosis  = '✓ AEC APPEARS WORKING — clean is lower than mic. Feedback may still occur at higher volumes.';
+      diagColor  = '#00ffaa';
+    } else {
+      diagnosis  = '⚠ REF ACTIVE BUT NOT CANCELLING — clean >= mic. echoGain may be wrong direction (adding instead of subtracting).';
+      diagColor  = '#ffcc00';
+    }
+
+    // Encode WAV to base64
+    const wavBuf = new ArrayBuffer(44+audio.length*2);
+    const dv = new DataView(wavBuf);
+    const ws = (o,s)=>{for(let i=0;i<s.length;i++)dv.setUint8(o+i,s.charCodeAt(i));};
+    ws(0,'RIFF');dv.setUint32(4,36+audio.length*2,true);
+    ws(8,'WAVE');ws(12,'fmt ');dv.setUint32(16,16,true);
+    dv.setUint16(20,1,true);dv.setUint16(22,1,true);
+    dv.setUint32(24,sr,true);dv.setUint32(28,sr*2,true);
+    dv.setUint16(32,2,true);dv.setUint16(34,16,true);
+    ws(36,'data');dv.setUint32(40,audio.length*2,true);
+    for(let i=0;i<audio.length;i++){
+      const s=Math.max(-1,Math.min(1,audio[i]));
+      dv.setInt16(44+i*2,s<0?s*0x8000:s*0x7FFF,true);
+    }
+    const bytes=new Uint8Array(wavBuf);
+    let bin=''; for(let i=0;i<bytes.length;i++) bin+=String.fromCharCode(bytes[i]);
+    const wavB64=btoa(bin);
+
+    // Settings
+    const ver = document.querySelector('.version-badge')?.textContent || 'v?';
+    const settings = {
+      version:     ver,
+      delayS:      parseFloat(delaySlider.value),
+      outputVol:   parseInt(volumeSlider.value)+'%',
+      inputGain:   parseFloat(inGainSlider.value)+'x',
+      latencyMs:   parseInt(latencySlider.value),
+      mic:         document.getElementById('micSelect')?.selectedOptions[0]?.text||'default',
+    };
+
+    const ts = new Date().toISOString().replace(/[:.]/g,'-').slice(0,-5);
+
+    // Build self-contained HTML report
+    const html = `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Echo Debug ${ts}</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:#0a0a0f;color:#ccc;font-family:monospace;padding:20px;max-width:680px;margin:0 auto;}
+h1{color:#00ffaa;font-size:16px;letter-spacing:0.2em;margin-bottom:4px;}
+h2{color:#00ffaa;font-size:11px;letter-spacing:0.2em;margin:16px 0 8px;border-bottom:1px solid #222;padding-bottom:4px;text-transform:uppercase;}
+.ts{color:#444;font-size:10px;margin-bottom:20px;}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px;}
+.wide{grid-column:span 2;}
+.box{background:#111;border:1px solid #222;border-radius:3px;padding:10px;}
+.k{font-size:9px;color:#555;letter-spacing:0.15em;margin-bottom:3px;}
+.v{font-size:20px;color:#00ffaa;line-height:1;}
+.v.warn{color:#ffcc00;} .v.bad{color:#ff4455;} .v.sm{font-size:14px;}
+.diag{background:#111;border:2px solid;border-radius:4px;padding:14px;margin:12px 0;font-size:13px;line-height:1.6;}
+audio{width:100%;margin:8px 0;}
+.bars{background:#0a0a0a;border:1px solid #222;border-radius:3px;padding:10px;font-size:11px;line-height:1.8;}
+.bar-row{display:flex;align-items:center;gap:8px;}
+.bar-label{min-width:40px;color:#555;}
+.bar-db{min-width:70px;text-align:right;}
+.bar-track{flex:1;height:8px;background:#1a1a1a;border-radius:2px;overflow:hidden;}
+.bar-fill{height:100%;background:#00ffaa;border-radius:2px;}
+pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflow-x:auto;border-radius:3px;}
+</style></head><body>
+<h1>ECHO CHAMBER DEBUG REPORT</h1>
+<div class="ts">Generated: ${new Date().toLocaleString()}</div>
+
+<div class="diag" style="border-color:${diagColor};color:${diagColor};">${diagnosis}</div>
+
+<h2>AEC Metrics</h2>
+<div class="grid">
+  <div class="box"><div class="k">SAMPLE RATE</div><div class="v sm">${aec.sampleRate}Hz</div></div>
+  <div class="box"><div class="k">LATENCY</div><div class="v sm">${aec.latMs}ms (${aec.latN} samples)</div></div>
+  <div class="box"><div class="k">SPK GAIN</div><div class="v sm">${aec.spkGain}</div></div>
+  <div class="box"><div class="k">ECHO GAIN</div><div class="v sm">${aec.echoGain}</div></div>
+  <div class="box"><div class="k">MIC RMS</div><div class="v sm">${aec.mic}</div></div>
+  <div class="box"><div class="k">REF RMS</div><div class="v sm ${aec.refActive?'':'bad'}">${aec.ref}</div></div>
+  <div class="box wide"><div class="k">CLEAN RMS (lower = better cancellation)</div><div class="v sm ${aec.cancelling?'':'warn'}">${aec.clean}</div></div>
+</div>
+
+<h2>Audio Stats</h2>
+<div class="grid">
+  <div class="box"><div class="k">DURATION</div><div class="v sm">${(audio.length/sr).toFixed(2)}s</div></div>
+  <div class="box"><div class="k">PEAK</div><div class="v sm ${peak>0.9?'bad':''}">${db(peak)}</div></div>
+  <div class="box"><div class="k">RMS</div><div class="v sm">${db(rms)}</div></div>
+  <div class="box"><div class="k">CLIPPING</div><div class="v sm ${clipped>100?'bad':''}">${(clipped/audio.length*100).toFixed(2)}%</div></div>
+  <div class="box wide"><div class="k">FEEDBACK GROWING</div><div class="v sm ${growing?'bad':''}">${growing?'YES ⚠':'NO ✓'}</div></div>
+</div>
+
+<h2>Level Over Time</h2>
+<div class="bars">${perSec.map(p=>{
+  const n=parseFloat(p.db);
+  const pct=isFinite(n)?Math.max(0,Math.min(100,(n+60)/60*100)):0;
+  const col=pct>85?'#ff4455':pct>60?'#ffcc00':'#00ffaa';
+  return '<div class="bar-row"><span class="bar-label">'+p.s+'s</span>'
+    +'<span class="bar-db">'+p.db+'</span>'
+    +'<div class="bar-track"><div class="bar-fill" style="width:'+pct+'%;background:'+col+'"></div></div></div>';
+}).join('')}</div>
+
+<h2>Settings</h2>
+<pre>${JSON.stringify(settings,null,2)}</pre>
+
+<h2>Audio Playback</h2>
+<audio controls src="data:audio/wav;base64,${wavB64}"></audio>
+<p style="font-size:10px;color:#555;margin-top:4px;">Play to hear what the mic captured during the last session</p>
+
+<h2>Raw JSON (for Claude)</h2>
+<pre>${JSON.stringify({aec,audioStats:{peak:db(peak),rms:db(rms),clippedPct:(clipped/audio.length*100).toFixed(2),growing,perSecDb:perSec.map(p=>p.db)},settings},null,2)}</pre>
+</body></html>`;
+
     const a=document.createElement('a');
-    a.href=URL.createObjectURL(new Blob([buf],{type:'audio/wav'}));
-    a.download=filename; a.click();
+    a.href=URL.createObjectURL(new Blob([html],{type:'text/html'}));
+    a.download='echo-debug-'+ts+'.html';
+    a.click();
+
+    document.getElementById('saveStatus').textContent =
+      `✓ Debug report saved (${(audio.length/sr).toFixed(1)}s audio + metrics)`;
   }
 
+  // ── Main audio engine ──────────────────────────────────────────────────────
   // ── Main audio engine ──────────────────────────────────────────────────────
   async function toggle() { if (!running) await start(); else stop(); }
 
@@ -914,7 +1020,7 @@
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v2.2');
+      setStatus('Live — v2.3');
       startDebugTimer();
       drawViz();
 
