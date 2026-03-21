@@ -54,7 +54,7 @@
 
 <h1>ECHO</h1>
 <div class="sub">DELAY EVERYTHING</div>
-<div class="version">v1.8</div>
+<div class="version">v1.9</div>
 
 <div class="panel">
   <div class="label-row">
@@ -105,12 +105,12 @@
   <div style="margin-top:8px;">
     <div class="label" style="margin-bottom:6px;">AUDIO MODE</div>
     <select id="audioMode" style="font-family:'Share Tech Mono',monospace;font-size:12px;background:#0a0a0a;border:1px solid var(--border);color:var(--text);padding:8px;border-radius:3px;width:100%;">
-      <option value="playback">Playback (default)</option>
-      <option value="interactive">Interactive</option>
+      <option value="playback">Playback (normal media)</option>
+      <option value="interactive" selected>Interactive → communications sink</option>
       <option value="balanced">Balanced</option>
     </select>
   </div>
-  <div style="font-size:9px;color:var(--dim);margin-top:6px;" id="outHint">Try different Audio Mode if BT headphones are stealing output. 'Interactive' may force phone speaker.</div>
+  <div style="font-size:9px;color:var(--dim);margin-top:6px;" id="outHint">'Interactive' tries the Android communications stream — may force phone speaker with BT connected.</div>
 </div>
 
 <div style="display:flex;gap:8px;width:100%;max-width:400px;margin-bottom:10px;">
@@ -336,18 +336,23 @@
       const outDeviceId = document.getElementById('outSel').value;
       const audioMode   = document.getElementById('audioMode').value;
 
-      // 'communications' latencyHint may route to phone speaker on Android
-      // even when BT headphones are connected (same as speakerphone in calls)
       ctx = new AudioContext({ latencyHint: audioMode });
 
+      // Try setSinkId('communications') — on Android this uses the call/speakerphone
+      // stream which routes to phone speaker even when BT headphones are connected
       if (ctx.setSinkId) {
-        const sinkId = outDeviceId || 'default';
+        const sinkId = outDeviceId || (audioMode === 'interactive' ? 'communications' : 'default');
         ctx.setSinkId(sinkId)
           .then(() => {
-            document.getElementById('outHint').textContent = `✓ Output set to: ${sinkId}`;
+            document.getElementById('outHint').textContent = `✓ Sink: ${sinkId}`;
           })
-          .catch(e => {
-            document.getElementById('outHint').textContent = '⚠ setSinkId failed: ' + e.message;
+          .catch(async e => {
+            // If 'communications' failed, try without it
+            document.getElementById('outHint').textContent = `setSinkId(${sinkId}) failed, trying default...`;
+            try {
+              await ctx.setSinkId('default');
+              document.getElementById('outHint').textContent = '⚠ Using default output';
+            } catch(e2) {}
           });
       }
       const sr  = ctx.sampleRate;
