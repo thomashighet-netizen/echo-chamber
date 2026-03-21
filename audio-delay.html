@@ -54,7 +54,7 @@
 
 <h1>ECHO</h1>
 <div class="sub">DELAY EVERYTHING</div>
-<div class="version">v1.0</div>
+<div class="version">v1.2</div>
 
 <div class="panel">
   <div class="label-row">
@@ -83,6 +83,17 @@
     oninput="document.getElementById('gainVal').textContent=parseFloat(this.value).toFixed(1);if(inGain)inGain.gain.setTargetAtTime(parseFloat(this.value),ctx.currentTime,0.05)">
 </div>
 
+<div class="panel" style="width:100%;max-width:400px;">
+  <div class="label-row" style="margin-bottom:8px;">
+    <span class="label">Microphone</span>
+    <button onclick="scanMics()" style="font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.15em;background:transparent;border:1px solid var(--dim);color:var(--dim);padding:3px 8px;border-radius:2px;cursor:pointer;">⟳ SCAN</button>
+  </div>
+  <select id="micSel" style="font-family:'Share Tech Mono',monospace;font-size:12px;background:#0a0a0a;border:1px solid var(--border);color:var(--text);padding:8px;border-radius:3px;width:100%;">
+    <option value="">Default (built-in)</option>
+  </select>
+  <div style="font-size:9px;color:var(--dim);margin-top:6px;" id="micHint">Plug in headphones with mic, tap Scan, select headset mic for best results.</div>
+</div>
+
 <button class="btn" id="btn" onclick="toggle()">▶ START</button>
 
 <div class="status"><span class="dot" id="dot"></span><span id="status">Ready</span></div>
@@ -94,6 +105,44 @@
   let ctx=null, stream=null, proc=null, inGain=null, outGain=null, running=false;
   let ring=null, w=0, r=0, filled=false, N=0;
 
+  async function scanMics() {
+    try {
+      // Need permission first to get labels
+      const tmp = await navigator.mediaDevices.getUserMedia({audio:true,video:false});
+      tmp.getTracks().forEach(t=>t.stop());
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const mics = devices.filter(d=>d.kind==='audioinput');
+      const sel = document.getElementById('micSel');
+      sel.innerHTML = '<option value="">Default (built-in)</option>';
+      mics.forEach((m,i) => {
+        const o = document.createElement('option');
+        o.value = m.deviceId;
+        o.textContent = m.label || 'Mic ' + (i+1);
+        // Highlight likely headset mics
+        if (m.label.toLowerCase().includes('headset') ||
+            m.label.toLowerCase().includes('wired') ||
+            m.label.toLowerCase().includes('earphone') ||
+            m.label.toLowerCase().includes('external')) {
+          o.textContent = '🎧 ' + o.textContent;
+          o.selected = true;
+        }
+        sel.appendChild(o);
+      });
+      document.getElementById('micHint').textContent = `Found ${mics.length} mic(s). Select your headset mic.`;
+    } catch(e) {
+      document.getElementById('micHint').textContent = 'Error: ' + e.message;
+    }
+  }
+
+  function getMicConstraints() {
+    const deviceId = document.getElementById('micSel').value;
+    const base = { echoCancellation:false, noiseSuppression:false, autoGainControl:false };
+    // If using headset mic, can enable echo cancellation since it's separated from speaker
+    if (deviceId) return { ...base, deviceId: { exact: deviceId } };
+    // Default: prefer environment-facing (rear) mic
+    return { ...base, facingMode: { ideal: 'environment' } };
+  }
+
   async function toggle() {
     if (!running) await start(); else stop();
   }
@@ -101,11 +150,7 @@
   async function start() {
     try {
       document.getElementById('status').textContent = 'Opening mic...';
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation:false, noiseSuppression:false, autoGainControl:false,
-                 facingMode:{ideal:'environment'} },
-        video: false
-      });
+      stream = await navigator.mediaDevices.getUserMedia({ audio: getMicConstraints(), video: false });
       ctx    = new AudioContext();
       const sr  = ctx.sampleRate;
       const sec = parseFloat(document.getElementById('delaySlider').value);
@@ -166,6 +211,12 @@
     document.getElementById('status').textContent = 'Ready';
     document.getElementById('bar').style.width = '0%';
   }
+  // Auto-scan for mics on load
+  window.addEventListener('load', () => {
+    navigator.mediaDevices.getUserMedia({audio:true,video:false})
+      .then(tmp => { tmp.getTracks().forEach(t=>t.stop()); return scanMics(); })
+      .catch(() => {}); // silently fail if no permission yet
+  });
 </script>
 </body>
 </html>
