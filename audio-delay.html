@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v3.7</div>
+    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v3.8</div>
   </header>
 
   <!-- Delay control -->
@@ -420,7 +420,7 @@
       <span class="tick">400ms</span>
     </div>
     <div class="label" style="margin-top:8px;font-size:9px;color:var(--dim);" id="latencyNote">Estimated speaker→mic travel time. Click Detect to measure.</div>
-    <button onclick="sweepLatency()" style="font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.15em;background:transparent;border:1px solid var(--accent);color:var(--accent);padding:4px 10px;border-radius:2px;cursor:pointer;margin-top:6px;">⟳ SWEEP</button>
+    <button onclick="chirpCalibrate()" style="font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.15em;background:transparent;border:1px solid var(--accent);color:var(--accent);padding:4px 10px;border-radius:2px;cursor:pointer;margin-top:6px;">⟳ CHIRP CAL</button>
     <span style="font-size:9px;color:var(--dim);margin-left:8px;" id="sweepNote"></span>
   </div>
 
@@ -653,57 +653,84 @@
   }
 
   // ── Save last 10s ──────────────────────────────────────────────────────────
-  function sweepLatency() {
-    if (!refBuf || !rollingBuf) {
-      document.getElementById('sweepNote').textContent = 'Start app first';
-      return;
-    }
-    if (!rollingFull && rollingW < 8192) {
-      document.getElementById('sweepNote').textContent = 'Wait for audio...';
-      return;
-    }
+  async function chirpCalibrate() {
+    const note = document.getElementById('sweepNote');
+    note.textContent = 'Calibrating...';
+    try {
+      // Open fresh mic + audio context — independent of main engine
+      const ds = await navigator.mediaDevices.getUserMedia({audio:getMicConstraints(),video:false});
+      const dc = new AudioContext();
+      const sr = dc.sampleRate;
 
-    const sr     = audioCtx.sampleRate;
-    const blockN = 4096;
+      const chirpMs = 40, listenMs = 500;
+      const chirpN  = Math.floor(chirpMs/1000*sr);
+      const listenN = Math.floor(listenMs/1000*sr);
 
-    // Snapshot mic (from rolling buffer) and ref (from refBuf) — frozen at this moment
-    const micSnap = new Float32Array(blockN);
-    const refSnap = new Float32Array(blockN);
-    for (let i = 0; i < blockN; i++) {
-      micSnap[i] = rollingBuf[(rollingW - blockN + i + rollingSize * 4) % rollingSize];
-      refSnap[i] = refBuf[(refW - blockN + i + refBufSize * 4) % refBufSize];
-    }
-
-    // Normalise both to unit power for clean cross-correlation
-    const norm = a => {
-      let s=0; for(let i=0;i<a.length;i++) s+=a[i]*a[i];
-      const rms=Math.sqrt(s/a.length)||1;
-      return a.map(x=>x/rms);
-    };
-    const mic = norm(micSnap);
-    const ref = norm(refSnap);
-
-    // Cross-correlate: find lag where ref best predicts mic
-    // Peak correlation = best alignment = true latency
-    const minLag = Math.floor(10  / 1000 * sr);
-    const maxLag = Math.floor(400 / 1000 * sr);
-    let bestLag = latN, bestCorr = -Infinity;
-
-    for (let lag = minLag; lag <= maxLag; lag++) {
-      let corr = 0;
-      for (let i = lag; i < blockN; i++) {
-        corr += mic[i] * ref[i - lag];
+      // Build 18.5kHz Hann-windowed chirp
+      const cb = dc.createBuffer(1, chirpN, sr);
+      const cd = cb.getChannelData(0);
+      for (let i=0;i<chirpN;i++) {
+        const env = 0.5 - 0.5*Math.cos(2*Math.PI*i/chirpN);
+        cd[i] = env * Math.sin(2*Math.PI*18500*i/sr);
       }
-      if (corr > bestCorr) { bestCorr = corr; bestLag = lag; }
-    }
 
-    const bestMs = Math.round(bestLag / sr * 1000);
-    latN = bestLag;
-    latencySlider.value = Math.min(400, bestMs);
-    latencyVal.textContent = Math.min(400, bestMs);
-    fill(latencySlider, ((Math.min(400, bestMs) - 5) / (400 - 5)) * 100);
-    latencyNote.textContent = `✓ XCorr → ${bestMs}ms (r=${bestCorr.toFixed(2)})`;
-    document.getElementById('sweepNote').textContent = `→ ${bestMs}ms r=${bestCorr.toFixed(2)}`;
+      // Record mic while playing chirp
+      const rec = new Float32Array(listenN);
+      let rp = 0;
+      const ms = dc.createMediaStreamSource(ds);
+      const sp = dc.createScriptProcessor(512,1,1);
+      const sg = dc.createGain(); sg.gain.value=0;
+      ms.connect(sp); sp.connect(sg); sg.connect(dc.destination);
+      sp.onaudioprocess = ev => {
+        const d = ev.inputBuffer.getChannelData(0);
+        for (let i=0;i<d.length&&rp<listenN;i++) rec[rp++]=d[i];
+      };
+
+      // Play chirp
+      const cs = dc.createBufferSource();
+      const cg = dc.createGain(); cg.gain.value=0.7;
+      cs.buffer=cb; cs.connect(cg); cg.connect(dc.destination);
+      cs.start(dc.currentTime);
+
+      await new Promise(r=>setTimeout(r, listenMs+80));
+      sp.disconnect(); ms.disconnect(); ds.getTracks().forEach(t=>t.stop()); dc.close();
+
+      // Cross-correlate chirp template against recording
+      let refPow=0;
+      for (let i=0;i<chirpN;i++) refPow+=cd[i]*cd[i];
+      const refRms = Math.sqrt(refPow/chirpN)||1;
+
+      const minLag = Math.floor(5/1000*sr);
+      const maxLag = Math.floor(400/1000*sr);
+      let bestLag=minLag, bestScore=-Infinity;
+
+      for (let lag=minLag; lag<maxLag && lag+chirpN<listenN; lag++) {
+        let dot=0, mp=0;
+        for (let j=0;j<chirpN;j++) {
+          dot += cd[j]*rec[lag+j];
+          mp  += rec[lag+j]*rec[lag+j];
+        }
+        const score = dot/(chirpN*refRms*(Math.sqrt(mp/chirpN)||1));
+        if (score>bestScore) { bestScore=score; bestLag=lag; }
+      }
+
+      const oneWayMs = Math.round((bestLag/sr)*1000);
+
+      if (bestScore > 0.04 && oneWayMs >= 5 && oneWayMs <= 400) {
+        const c = Math.max(5, Math.min(400, oneWayMs));
+        latN = Math.floor(c/1000*sr);
+        latencySlider.value = c;
+        latencyVal.textContent = c;
+        fill(latencySlider, ((c-5)/(400-5))*100);
+        latencyNote.textContent = `✓ Chirp cal: ${c}ms (score:${bestScore.toFixed(3)})`;
+        note.textContent = `→ ${c}ms`;
+        if (audioCtx) latN = Math.floor(c/1000*audioCtx.sampleRate);
+      } else {
+        note.textContent = `⚠ Weak signal (${bestScore.toFixed(3)}) — try louder`;
+      }
+    } catch(err) {
+      document.getElementById('sweepNote').textContent = 'Failed: '+err.message;
+    }
   }
 
   function autoEchoGain() {
@@ -1103,7 +1130,7 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v3.7');
+      setStatus('Live — v3.8');
       startDebugTimer();
       drawViz();
 
