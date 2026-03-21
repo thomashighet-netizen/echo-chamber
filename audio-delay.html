@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v4.8</div>
+    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v4.9</div>
   </header>
 
   <!-- Delay control -->
@@ -502,21 +502,22 @@
 
   let dbgMic = 0, dbgRef = 0, dbgClean = 0, dbgSpkGain = 1, dbgSR = 0;
 
-  // Feedback detection + ducking
-  // Feedback signature: sustained signal that is GROWING over time
-  // Normal sounds (voice, music) fluctuate; feedback only goes up
+  // Feedback control
   let duckActive   = true;
   let duckGain     = 1.0;
-  let duckTarget   = 1.0;
   let baseVolume   = 0.8;
 
-  // Rolling RMS history to detect growth trend
-  const RMS_HIST_LEN = 8;   // compare over ~8 blocks (~0.7s)
-  let rmsHistory    = new Float32Array(RMS_HIST_LEN);
-  let rmsHistIdx    = 0;
-  const GROWTH_RATIO    = 1.5;  // if RMS grew 50% over history window = feedback
-  const DUCK_ATTACK     = 0.97;
-  const DUCK_RELEASE    = 0.04; // ~0.5s restore
+  // RMS history for growth detection
+  const RMS_HIST_LEN  = 16;
+  let rmsHistory      = new Float32Array(RMS_HIST_LEN);
+  let rmsHistIdx      = 0;
+  const GROWTH_RATIO  = 2.0;   // needs to double before we react
+  const DUCK_ATTACK   = 0.97;
+  const DUCK_RELEASE  = 0.08;  // ~0.3s restore
+
+  // Periodic loop-breaker: brief fade every N seconds to kill any accumulation
+  let loopBreakerTimer = null;
+  let loopBreakerActive = false;
 
   // ── DOM ────────────────────────────────────────────────────────────────────
   const delaySlider   = document.getElementById('delaySlider');
@@ -775,6 +776,38 @@
     btn.disabled = false;
   }
 
+  // ── Loop breaker ──────────────────────────────────────────────────────────
+  function triggerLoopBreaker() {
+    if (loopBreakerActive || !outGainNode || !audioCtx) return;
+    loopBreakerActive = true;
+    // Fade out quickly
+    outGainNode.gain.setTargetAtTime(0, audioCtx.currentTime, 0.02);
+    // Hold for 200ms then restore
+    setTimeout(() => {
+      if (outGainNode && audioCtx) {
+        outGainNode.gain.setTargetAtTime(baseVolume, audioCtx.currentTime, 0.1);
+      }
+      // Reset RMS history so we start fresh
+      rmsHistory.fill(0);
+      rmsHistIdx = 0;
+      setTimeout(() => { loopBreakerActive = false; }, 500);
+    }, 200);
+  }
+
+  // Periodic loop breaker — fires every 8s as a safety net
+  function startLoopBreaker() {
+    stopLoopBreaker();
+    loopBreakerTimer = setInterval(() => {
+      if (!running || !outGainNode) return;
+      // Only fire if there's actually signal (not dead silence)
+      if (dbgMic > 0.0001) triggerLoopBreaker();
+    }, 8000);
+  }
+  function stopLoopBreaker() {
+    if (loopBreakerTimer) { clearInterval(loopBreakerTimer); loopBreakerTimer = null; }
+    loopBreakerActive = false;
+  }
+
   // ── Debug timer ────────────────────────────────────────────────────────────
   let debugTimer = null;
   function startDebugTimer() {
@@ -968,16 +1001,13 @@
         const n=inp.length;
         dbgMic=micPow/n; dbgRef=refPow/n; dbgClean=cleanPow/n; dbgSpkGain=oGain*iGain;
 
-        // Feedback detection: check if mic RMS is consistently growing
-        if (duckActive) {
+        // Feedback detection: track RMS growth
+        if (duckActive && !loopBreakerActive) {
           const micRMS = Math.sqrt(micPow/n);
-
-          // Store in circular history
           rmsHistory[rmsHistIdx % RMS_HIST_LEN] = micRMS;
           rmsHistIdx++;
 
           if (rmsHistIdx >= RMS_HIST_LEN * 2) {
-            // Need 2 full windows before making decisions (avoids false triggers on startup)
             const half = Math.floor(RMS_HIST_LEN / 2);
             let oldAvg = 0, newAvg = 0;
             for (let h = 0; h < half; h++) {
@@ -985,17 +1015,9 @@
               newAvg += rmsHistory[(rmsHistIdx - half + h + RMS_HIST_LEN*4) % RMS_HIST_LEN];
             }
             oldAvg /= half; newAvg /= half;
-
-            // Feedback: signal consistently growing AND at significant level
-            // oldAvg must also be non-trivial (not comparing silence to sound)
-            const isFeedback = oldAvg > 0.01 && newAvg > oldAvg * GROWTH_RATIO;
-            duckTarget = isFeedback ? 0.1 : 1.0;
-          } else {
-            duckTarget = 1.0; // don't duck until we have enough history
+            const isFeedback = oldAvg > 0.015 && newAvg > oldAvg * GROWTH_RATIO;
+            if (isFeedback) triggerLoopBreaker();
           }
-
-          duckGain += (duckTarget - duckGain) * (duckTarget < duckGain ? DUCK_ATTACK : DUCK_RELEASE);
-          outGainNode.gain.setTargetAtTime(baseVolume * duckGain, audioCtx.currentTime, 0.01);
         }
 
         if(filled){
@@ -1017,8 +1039,9 @@
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v4.8');
+      setStatus('Live — v4.9');
       startDebugTimer();
+      startLoopBreaker();
       drawViz();
     } catch(err){
       setStatus('Error: '+err.message);
@@ -1027,6 +1050,7 @@
   }
 
   function stop() {
+    stopLoopBreaker();
     stopDebugTimer();
     if(procNode)    {procNode.disconnect();    procNode=null;}
     if(inGainNode)  {inGainNode.disconnect();  inGainNode=null;}
