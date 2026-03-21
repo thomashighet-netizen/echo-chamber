@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v3.0</div>
+    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v3.1</div>
   </header>
 
   <!-- Delay control -->
@@ -946,8 +946,10 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
 
       latN        = Math.floor(parseInt(latencySlider.value)/1000*sr);
       bufN        = Math.floor(delaySec*sr);
-      ringBuf     = new Float32Array(bufN);
-      wPos=0; rPos=0; filled=false;
+      // Allocate extra latN samples so we can look back past the delay
+      const ringTotal = bufN + latN + 4096; // extra headroom
+      ringBuf     = new Float32Array(ringTotal);
+      wPos=0; rPos=bufN; filled=false; // rPos starts bufN ahead of wPos
 
       refBufSize  = Math.max(Math.floor(sr*0.6), 32768);
       refBuf      = new Float32Array(refBufSize);
@@ -983,16 +985,13 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
           rollingW = (rollingW+1)%rollingSize;
           if (!rollingFull && rollingW===0) rollingFull=true;
 
-          // 2. What did the speaker play?
-          // Speaker plays ringBuf delayed by (bufN + latN) samples from now.
-          // We look back that far in the ring buffer.
-          // This breaks the circular dependency — we use mic input history, not output.
-          let spkAtMic = 0;
-          if (filled) {
-            const lookback = (bufN + latN) % bufN;
-            const spkIdx   = (wPos - lookback + bufN * 4) % bufN;
-            spkAtMic = ringBuf[spkIdx] * outGain * echoGain;
-          }
+          // 2. What did the speaker play right now?
+          // The speaker is playing what we wrote (bufN + latN) samples ago.
+          // Look that far back in the ring buffer.
+          const ringTotal = ringBuf.length;
+          const spkLookback = bufN + latN;
+          const spkIdx  = (wPos - spkLookback + ringTotal * 4) % ringTotal;
+          const spkAtMic = ringBuf[spkIdx] * outGain * echoGain;
 
           // 3. Subtract speaker echo from mic
           const clean = micRaw - spkAtMic;
@@ -1001,20 +1000,22 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
           refPow   += spkAtMic*spkAtMic;
           cleanPow += clean*clean;
 
-          // 4. Write clean signal into delay buffer
+          // 4. Write to ring buffer
           ringBuf[wPos] = clean;
-          wPos = (wPos+1)%bufN;
-          if (!filled && wPos===0) filled=true;
+          wPos = (wPos+1) % ringTotal;
 
-          // 5. Read delayed output
-          const outSample = filled ? ringBuf[rPos] : 0;
-          rPos = (rPos+1)%bufN;
+          // 5. Read delayed output (rPos is always bufN ahead of wPos at start)
+          const outSample = ringBuf[rPos];
+          rPos = (rPos+1) % ringTotal;
           out[i] = outSample;
+
+          // Track filled state for UI
+          if (!filled && wPos === bufN) filled = true;
         }
 
         // Update debug vars (read by UI timer)
         const n = inp.length;
-        dbgMic=micPow/n; dbgRef=refReady ? refPow/n : 0; dbgClean=cleanPow/n; dbgSpkGain=outGain*inGain;
+        dbgMic=micPow/n; dbgRef=refPow/n; dbgClean=cleanPow/n; dbgSpkGain=outGain*inGain;
 
         // Buffer progress
         if (filled) {
@@ -1022,7 +1023,7 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
           bufferLabel.textContent=`Buffer: ${delaySec.toFixed(1)}s / ${delaySec.toFixed(1)}s`;
         } else {
           bufferFill.style.width=((wPos/bufN)*100)+'%';
-          bufferLabel.textContent=`Buffer: ${(wPos/sr).toFixed(1)}s / ${delaySec.toFixed(1)}s`;
+          bufferLabel.textContent=`Buffer: ${(wPos/sr).toFixed(1)}s / ${delaySec.toFixed(1)}s (filling...)`;
         }
       };
 
@@ -1036,7 +1037,7 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v3.0');
+      setStatus('Live — v3.1');
       startDebugTimer();
       drawViz();
 
