@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v5.2</div>
+    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v5.3</div>
   </header>
 
   <!-- Delay control -->
@@ -498,7 +498,7 @@
   // Up to 4 simultaneous notch filters for multiple feedback frequencies
   let notchActive = true;
   const MAX_NOTCHES = 4;
-  const NOTCH_Q = 12; // narrow notch
+  const NOTCH_Q = 4; // wider notch = more cut
   let notches = []; // array of {freq, b0,b1,b2,a1,a2, x1,x2,y1,y2, strength}
 
   function makeNotch(freq, sr) {
@@ -572,7 +572,7 @@
 
       // Find peaks — bins that are significantly above their neighbours
       // AND above a fraction of total power (feedback signature)
-      const threshold = totalPow * 0.15; // 15% of power = likely feedback
+      const threshold = totalPow * 0.08; // 8% of power = likely feedback
       const newNotchFreqs = [];
 
       for (let i=1; i<bins.length-1; i++) {
@@ -589,22 +589,40 @@
       const top = newNotchFreqs.slice(0, MAX_NOTCHES);
 
       if (top.length > 0) {
-        // Update notches — keep existing if freq is similar, add new ones
         notches = top.map(t => {
-          // Reuse existing notch at similar freq if possible (preserves filter state)
-          const existing = notches.find(n => Math.abs(n.freq-t.f)<50);
+          const existing = notches.find(n => Math.abs(n.freq-t.f)<100);
           if (existing) { existing.strength=t.ratio; return existing; }
           const n = makeNotch(t.f, sr);
           if (n) n.strength=t.ratio;
           return n;
         }).filter(Boolean);
 
-        const info = top.map(t=>`${t.f}Hz(${(t.ratio*100).toFixed(0)}%)`).join(' ');
-        document.getElementById('notchNote').textContent = `notch: ${info}`;
+        // Also add harmonics — feedback often rings at f, 2f, 3f
+        const fundamentals = top.slice(0,2);
+        for (const t of fundamentals) {
+          for (const mult of [2, 3]) {
+            const hf = t.f * mult;
+            if (hf < sr/2 - 100 && !notches.find(n=>Math.abs(n.freq-hf)<100)) {
+              const n = makeNotch(hf, sr);
+              if (n) { n.strength=t.ratio*0.5; notches.push(n); }
+            }
+          }
+        }
+        notches = notches.slice(0, MAX_NOTCHES);
+
+        // Temporarily reduce volume when strong feedback detected
+        if (outGainNode && audioCtx && top[0].ratio > 0.3) {
+          outGainNode.gain.setTargetAtTime(baseVolume * 0.5, audioCtx.currentTime, 0.05);
+          setTimeout(() => {
+            if (outGainNode && audioCtx) outGainNode.gain.setTargetAtTime(baseVolume, audioCtx.currentTime, 0.3);
+          }, 300);
+        }
+
+        const info = notches.map(n=>`${n.freq.toFixed(0)}Hz`).join(' ');
+        document.getElementById('notchNote').textContent = `notch: ${info} (${(top[0].ratio*100).toFixed(0)}%)`;
       } else {
-        // No dominant peaks — gradually clear notches
         notches = [];
-        document.getElementById('notchNote').textContent = 'notch: no feedback';
+        document.getElementById('notchNote').textContent = 'notch: none';
       }
     }, 100); // run every 100ms — fast enough to catch feedback early
   }
@@ -983,7 +1001,7 @@
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v5.2');
+      setStatus('Live — v5.3');
       startDebugTimer();
       startFftDetector(sr);
       drawViz();
