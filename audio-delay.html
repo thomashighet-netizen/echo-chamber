@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v5.7</div>
+    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v5.8</div>
   </header>
 
   <!-- Delay control -->
@@ -489,7 +489,13 @@
 
   let ringBuf=null, wPos=0, rPos=0, filled=false, bufN=0;
   let refBuf=null, refBufSize=0, refW=0, latN=0;
-  let echoGain=0.36;
+  let echoGain=0.36; // kept for display/compat
+
+  // NLMS AEC — multi-tap filter, adapts to room acoustics automatically
+  const NLMS_TAPS = 256;    // covers ~5ms of uncertainty around latN
+  const NLMS_MU   = 0.05;   // step size — fast enough but stable
+  const NLMS_EPS  = 1e-6;
+  let   nlmsW     = null;   // filter weights
   let rollingBuf=null, rollingSize=0, rollingW=0, rollingFull=false;
   let dbgMic=0, dbgRef=0, dbgClean=0, dbgSpkGain=1, dbgSR=0;
   let baseVolume=0.8;
@@ -540,7 +546,6 @@
   let prevAdaptRMS = 0;
 
   function startAdaptEcho() {
-    stopAdaptEcho();
     adaptEchoTimer = setInterval(() => {
       if (!running || dbgMic <= 0) return;
       const curRMS = Math.sqrt(dbgMic);
@@ -864,7 +869,7 @@
     debugTimer=setInterval(()=>{
       const db=v=>v>0?(20*Math.log10(Math.sqrt(v))).toFixed(1)+'dB':'-inf';
       document.getElementById('debugInfo').innerHTML=
-        `sr:${dbgSR} &nbsp; latN:${latN} &nbsp; echo:${echoGain.toFixed(2)} &nbsp; notches:${notches.length}<br>`+
+        `sr:${dbgSR} &nbsp; latN:${latN} &nbsp; nlms:${nlmsW?Math.sqrt(nlmsW.reduce((s,w)=>s+w*w,0)).toFixed(4):'—'} &nbsp; notches:${notches.length}<br>`+
         `mic:${db(dbgMic)} &nbsp; ref:${db(dbgRef)} &nbsp; clean:${db(dbgClean)} &nbsp; vol:${(baseVolume*100).toFixed(0)}%`;
     },250);
   }
@@ -960,8 +965,9 @@
 
       bufN=Math.floor(delaySec*sr);
       ringBuf=new Float32Array(bufN); wPos=0;rPos=0;filled=false;
-      refBufSize=Math.max(latN*4,32768);
+      refBufSize=Math.max((latN+NLMS_TAPS)*4,32768);
       refBuf=new Float32Array(refBufSize); refW=0;
+      nlmsW=new Float32Array(NLMS_TAPS); // init to zero — NLMS adapts from scratch
       rollingSize=Math.floor(10*sr);
       rollingBuf=new Float32Array(rollingSize); rollingW=0;rollingFull=false;
       notches=[];
@@ -988,16 +994,26 @@
           rollingW=(rollingW+1)%rollingSize;
           if(!rollingFull&&rollingW===0)rollingFull=true;
 
-          // AEC
-          const refIdx=(refW-latN+refBufSize*4)%refBufSize;
-          const spkAtMic=refBuf[refIdx]*echoGain;
-          const clean=micRaw-spkAtMic;
+          // NLMS AEC — multi-tap filter centred at latN
+          let echoEst=0, xPow=0;
+          for(let t=0;t<NLMS_TAPS;t++){
+            const idx=(refW-latN-t+refBufSize*4)%refBufSize;
+            const x=refBuf[idx];
+            echoEst+=nlmsW[t]*x;
+            xPow+=x*x;
+          }
+          const err=micRaw-echoEst;
+          const norm=NLMS_MU/(xPow+NLMS_EPS);
+          for(let t=0;t<NLMS_TAPS;t++){
+            const idx=(refW-latN-t+refBufSize*4)%refBufSize;
+            nlmsW[t]+=norm*err*refBuf[idx];
+          }
 
           micPow+=micRaw*micRaw;
-          refPow+=spkAtMic*spkAtMic;
-          cleanPow+=clean*clean;
+          refPow+=echoEst*echoEst;
+          cleanPow+=err*err;
 
-          // Delay — store original mic
+          // Delay — store original mic (no circular dependency)
           ringBuf[wPos]=micRaw;
           wPos=(wPos+1)%bufN;
           if(!filled&&wPos===0)filled=true;
@@ -1011,7 +1027,7 @@
 
           out[i]=outSample;
 
-          // Store in ref buffer + FFT buffer
+          // Store in ref buffer for NLMS
           refBuf[refW]=outSample*oGain;
           refW=(refW+1)%refBufSize;
         }
@@ -1044,18 +1060,16 @@
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v5.7');
+      setStatus('Live — v5.8');
       startDebugTimer();
       startFftDetector(sr);
       startTsHistory();
-      startAdaptEcho();
       drawViz();
     }catch(err){setStatus('Error: '+err.message);console.error(err);}
   }
 
   function stop(){
     stopFftDetector();
-    stopAdaptEcho();
     stopTsHistory();
     stopDebugTimer();
     if(procNode){procNode.disconnect();procNode=null;}
@@ -1064,7 +1078,7 @@
     if(sourceNode){sourceNode.disconnect();sourceNode=null;}
     if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
     if(audioCtx){audioCtx.close();audioCtx=null;}
-    ringBuf=null;refBuf=null;rollingBuf=null;notches=[];
+    ringBuf=null;refBuf=null;rollingBuf=null;nlmsW=null;notches=[];
     running=false;filled=false;
     mainBtn.textContent='▶ Start Listening';
     mainBtn.classList.remove('active','stop');
