@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v6.2</div>
+    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v6.3</div>
   </header>
 
   <!-- Delay control -->
@@ -779,16 +779,6 @@
       inGainNode=audioCtx.createGain();inGainNode.gain.value=inGain;
       outGainNode=audioCtx.createGain();outGainNode.gain.value=vol;
 
-      // Smoothing buffer — irons out hardware AEC gating choppiness
-      // We track a short-term RMS and use it to smooth gain transitions
-      const SMOOTH_MS  = 80;  // smoothing window
-      const smoothN    = Math.floor(SMOOTH_MS/1000*sr);
-      let   smoothBuf  = new Float32Array(smoothN);
-      let   smoothPos  = 0;
-      let   smoothGain = 1.0;
-      const SMOOTH_ATTACK  = 0.98;  // fast attack
-      const SMOOTH_RELEASE = 0.05;  // slow release — fills in the gaps
-
       procNode=audioCtx.createScriptProcessor(4096,1,1);
       procNode.onaudioprocess=e=>{
         const inp=e.inputBuffer.getChannelData(0);
@@ -799,42 +789,24 @@
         for(let i=0;i<inp.length;i++){
           const micRaw=inp[i]/iGain;
 
-          // Rolling buffer
           rollingBuf[rollingW]=micRaw;
           rollingW=(rollingW+1)%rollingSize;
           if(!rollingFull&&rollingW===0)rollingFull=true;
 
           micPow+=micRaw*micRaw;
 
-          // Write to delay buffer
           ringBuf[wPos]=micRaw;
           wPos=(wPos+1)%bufN;
           if(!filled&&wPos===0)filled=true;
           const outSample=filled?ringBuf[rPos]:0;
           rPos=(rPos+1)%bufN;
-
-          // Smooth the hardware AEC gating using envelope follower
-          // When mic is open (loud), track level. When mic gates, hold level briefly.
-          smoothBuf[smoothPos%smoothN]=micRaw*micRaw;
-          smoothPos++;
-          const rms=Math.sqrt(smoothBuf.reduce((a,b)=>a+b,0)/smoothN);
-          const targetGain = rms > 0.0001 ? 1.0 : smoothGain * 0.95;
-          smoothGain += (targetGain - smoothGain) * (targetGain > smoothGain ? SMOOTH_ATTACK : SMOOTH_RELEASE);
-          smoothGain = Math.max(0, Math.min(1, smoothGain));
-
-          out[i]=outSample; // smoothGain applied by outGainNode indirectly via envelope
-
+          out[i]=outSample;
           cleanPow+=outSample*outSample;
         }
 
         const n=inp.length;
         dbgMic=micPow/n;dbgClean=cleanPow/n;
         dbgSpkGain=outGainNode.gain.value*iGain;
-
-        // Apply smoothed gain to output to fill gating gaps
-        if(outGainNode && audioCtx) {
-          outGainNode.gain.setTargetAtTime(baseVolume*smoothGain, audioCtx.currentTime, 0.02);
-        }
 
         if(filled){bufferFill.style.width='100%';bufferLabel.textContent=`Buffer: ${delaySec.toFixed(1)}s / ${delaySec.toFixed(1)}s`;}
         else{bufferFill.style.width=((wPos/bufN)*100)+'%';bufferLabel.textContent=`Buffer: ${(wPos/sr).toFixed(1)}s / ${delaySec.toFixed(1)}s`;}
@@ -850,7 +822,7 @@
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v6.2');
+      setStatus('Live — v6.3');
       startDebugTimer();
       drawViz();
     }catch(err){setStatus('Error: '+err.message);console.error(err);}
