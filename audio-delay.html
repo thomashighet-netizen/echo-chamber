@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v5.1</div>
+    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v5.2</div>
   </header>
 
   <!-- Delay control -->
@@ -450,10 +450,7 @@
 
   <!-- Save last button -->
   <button class="btn" id="saveBtn" onclick="saveLast()" style="margin-top:10px;border-color:var(--warn);color:var(--warn);">⚡ SAVE LAST 10s</button>
-  <div style="display:flex;gap:8px;margin-top:8px;">
-    <button class="btn" onclick="notchActive=!notchActive;if(!notchActive){notchFreq=0;}this.textContent=notchActive?'🎚 NOTCH ON':'🎚 NOTCH OFF';this.style.borderColor=notchActive?'var(--accent)':'var(--dim)';this.style.color=notchActive?'var(--accent)':'var(--dim)';" style="margin:0;flex:1;">🎚 NOTCH ON</button>
-    <button class="btn" onclick="duckActive=!duckActive;this.textContent=duckActive?'🦆 DUCK ON':'🦆 DUCK OFF';this.style.borderColor=duckActive?'var(--accent)':'var(--dim)';this.style.color=duckActive?'var(--accent)':'var(--dim)';" style="margin:0;flex:1;">🦆 DUCK ON</button>
-  </div>
+  <button class="btn" id="notchBtn" onclick="notchActive=!notchActive;if(!notchActive)clearNotches();document.getElementById('notchBtn').textContent=notchActive?'🎚 NOTCH FILTER ON':'🎚 NOTCH FILTER OFF';" style="margin-top:8px;">🎚 NOTCH FILTER ON</button>
   <button class="btn" id="threshBtn" onclick="detectFeedbackThreshold()" style="margin-top:8px;border-color:#44aaff;color:#44aaff;">🔧 AUTO SETUP (latency + safe volume)</button>
   <div style="margin-top:4px;font-size:11px;color:#44aaff;padding:2px;" id="threshNote">Measures latency and finds safe volume automatically. ~20s. Keep quiet.</div>
   <button class="btn" id="debugUploadBtn" onclick="uploadDebugBundle()" style="margin-top:8px;border-color:#44aaff;color:#44aaff;">📡 UPLOAD DEBUG REPORT</button>
@@ -487,440 +484,354 @@
 
 <script>
   // ── State ──────────────────────────────────────────────────────────────────
-  let audioCtx    = null;
-  let sourceNode  = null;
-  let inGainNode  = null;
-  let outGainNode = null;
-  let procNode    = null;
-  let analyser    = null;
-  let stream      = null;
-  let running     = false;
+  let audioCtx=null, sourceNode=null, inGainNode=null, outGainNode=null;
+  let procNode=null, analyser=null, stream=null, running=false;
 
-  let ringBuf = null, wPos = 0, rPos = 0, filled = false, bufN = 0;
-  let refBuf  = null, refBufSize = 0, refW = 0, latN = 0;
-  let echoGain = 0.3;
+  let ringBuf=null, wPos=0, rPos=0, filled=false, bufN=0;
+  let refBuf=null, refBufSize=0, refW=0, latN=0;
+  let echoGain=0.36;
+  let rollingBuf=null, rollingSize=0, rollingW=0, rollingFull=false;
+  let dbgMic=0, dbgRef=0, dbgClean=0, dbgSpkGain=1, dbgSR=0;
+  let baseVolume=0.8;
 
-  let rollingBuf = null, rollingSize = 0, rollingW = 0, rollingFull = false;
-
-  let dbgMic = 0, dbgRef = 0, dbgClean = 0, dbgSpkGain = 1, dbgSR = 0;
-
-  // Notch filter for feedback — targets specific feedback frequencies
-  // Uses a 2nd-order IIR notch filter, adapts to detected feedback frequency
+  // ── Multi-notch filter ─────────────────────────────────────────────────────
+  // Up to 4 simultaneous notch filters for multiple feedback frequencies
   let notchActive = true;
-  let notchFreq   = 0;      // current notch frequency (0 = inactive)
-  let notchB0=1, notchB1=0, notchB2=0, notchA1=0, notchA2=0; // filter coeffs
-  let notchX1=0, notchX2=0, notchY1=0, notchY2=0;              // filter state
-  const NOTCH_Q = 8;        // narrow notch (higher = narrower)
+  const MAX_NOTCHES = 4;
+  const NOTCH_Q = 12; // narrow notch
+  let notches = []; // array of {freq, b0,b1,b2,a1,a2, x1,x2,y1,y2, strength}
 
-  function setNotch(freq, sr) {
-    if (freq <= 0 || freq >= sr/2) { notchFreq=0; return; }
-    notchFreq = freq;
-    const w0  = 2*Math.PI*freq/sr;
-    const cos = Math.cos(w0);
+  function makeNotch(freq, sr) {
+    if (freq <= 20 || freq >= sr/2 - 100) return null;
+    const w0    = 2*Math.PI*freq/sr;
+    const cos   = Math.cos(w0);
     const alpha = Math.sin(w0)/(2*NOTCH_Q);
-    const a0  = 1 + alpha;
-    notchB0 =  1/a0;
-    notchB1 = -2*cos/a0;
-    notchB2 =  1/a0;
-    notchA1 = -2*cos/a0;
-    notchA2 = (1-alpha)/a0;
-    notchX1=0; notchX2=0; notchY1=0; notchY2=0;
+    const a0    = 1+alpha;
+    return {
+      freq,
+      b0:  1/a0,  b1: -2*cos/a0, b2:  1/a0,
+      a1: -2*cos/a0,              a2: (1-alpha)/a0,
+      x1:0, x2:0, y1:0, y2:0,
+      strength: 0  // how strong this feedback is (0-1)
+    };
   }
 
-  function applyNotch(x) {
-    const y = notchB0*x + notchB1*notchX1 + notchB2*notchX2
-                        - notchA1*notchY1 - notchA2*notchY2;
-    notchX2=notchX1; notchX1=x;
-    notchY2=notchY1; notchY1=y;
+  function applyNotches(x) {
+    let y = x;
+    for (const n of notches) {
+      const out = n.b0*y + n.b1*n.x1 + n.b2*n.x2 - n.a1*n.y1 - n.a2*n.y2;
+      n.x2=n.x1; n.x1=y; n.y2=n.y1; n.y1=out;
+      y = out;
+    }
     return y;
   }
 
-  // FFT-based feedback detector — runs every N blocks
-  let fftBuf      = null;
-  let fftPos      = 0;
-  const FFT_SIZE  = 2048;
-  let fftTimer    = null;
+  function clearNotches() {
+    notches = [];
+    document.getElementById('notchNote').textContent = 'notch: cleared';
+  }
+
+  // FFT feedback detector — runs every 100ms
+  // Uses a circular buffer of recent output, finds dominant frequencies
+  let fftBuf=null, fftPos=0;
+  const FFT_SIZE=4096;
+  let fftTimer=null;
 
   function startFftDetector(sr) {
     fftBuf = new Float32Array(FFT_SIZE);
     fftPos = 0;
+    stopFftDetector();
     fftTimer = setInterval(() => {
-      if (!fftBuf || !notchActive) return;
-      // Simple DFT on the buffer to find dominant frequency
-      // Check 100Hz-4000Hz range (typical feedback frequencies)
-      const minBin = Math.floor(100 * FFT_SIZE / sr);
-      const maxBin = Math.floor(4000 * FFT_SIZE / sr);
-      let   maxPow = 0, maxBin_ = 0, totalPow = 0;
-      const spectrum = new Float32Array(maxBin - minBin);
-      for (let k = minBin; k < maxBin; k++) {
-        let re=0, im=0;
-        for (let n=0; n<FFT_SIZE; n++) {
-          const angle = 2*Math.PI*k*n/FFT_SIZE;
-          re += fftBuf[n]*Math.cos(angle);
-          im += fftBuf[n]*Math.sin(angle);
+      if (!fftBuf || !notchActive || !running) return;
+
+      // Compute power spectrum using Goertzel algorithm
+      // Check 80Hz to 8000Hz — typical feedback range
+      const minFreq=80, maxFreq=8000;
+      const step = 20; // 20Hz resolution
+      let   totalPow=0;
+      const bins=[];
+
+      for (let f=minFreq; f<=maxFreq; f+=step) {
+        const k = f*FFT_SIZE/sr;
+        const w = 2*Math.PI*k/FFT_SIZE;
+        const coeff = 2*Math.cos(w);
+        let s0=0,s1=0,s2=0;
+        for (let i=0;i<FFT_SIZE;i++){
+          s0 = coeff*s1 - s2 + fftBuf[(fftPos+i)%FFT_SIZE];
+          s2=s1; s1=s0;
         }
-        const pow = re*re + im*im;
-        spectrum[k-minBin] = pow;
+        const pow = s1*s1 + s2*s2 - coeff*s1*s2;
+        bins.push({f, pow});
         totalPow += pow;
-        if (pow > maxPow) { maxPow=pow; maxBin_=k; }
       }
-      // Feedback: one bin dominates — peak > 40% of total power
-      const peakRatio = totalPow > 0 ? maxPow/totalPow : 0;
-      if (peakRatio > 0.4 && maxPow > 0) {
-        const feedbackFreq = maxBin_ * sr / FFT_SIZE;
-        setNotch(feedbackFreq, sr);
-        document.getElementById('notchNote').textContent = `notch: ${feedbackFreq.toFixed(0)}Hz (${(peakRatio*100).toFixed(0)}%)`;
+
+      if (totalPow < 0.001) {
+        document.getElementById('notchNote').textContent = 'notch: silent';
+        return;
+      }
+
+      // Find peaks — bins that are significantly above their neighbours
+      // AND above a fraction of total power (feedback signature)
+      const threshold = totalPow * 0.15; // 15% of power = likely feedback
+      const newNotchFreqs = [];
+
+      for (let i=1; i<bins.length-1; i++) {
+        const b = bins[i];
+        if (b.pow > threshold &&
+            b.pow > bins[i-1].pow * 1.5 &&
+            b.pow > bins[i+1].pow * 1.5) {
+          newNotchFreqs.push({f: b.f, ratio: b.pow/totalPow});
+        }
+      }
+
+      // Sort by dominance, take top MAX_NOTCHES
+      newNotchFreqs.sort((a,b)=>b.ratio-a.ratio);
+      const top = newNotchFreqs.slice(0, MAX_NOTCHES);
+
+      if (top.length > 0) {
+        // Update notches — keep existing if freq is similar, add new ones
+        notches = top.map(t => {
+          // Reuse existing notch at similar freq if possible (preserves filter state)
+          const existing = notches.find(n => Math.abs(n.freq-t.f)<50);
+          if (existing) { existing.strength=t.ratio; return existing; }
+          const n = makeNotch(t.f, sr);
+          if (n) n.strength=t.ratio;
+          return n;
+        }).filter(Boolean);
+
+        const info = top.map(t=>`${t.f}Hz(${(t.ratio*100).toFixed(0)}%)`).join(' ');
+        document.getElementById('notchNote').textContent = `notch: ${info}`;
       } else {
-        // No dominant frequency — clear notch
-        notchFreq = 0;
-        document.getElementById('notchNote').textContent = 'no feedback freq';
+        // No dominant peaks — gradually clear notches
+        notches = [];
+        document.getElementById('notchNote').textContent = 'notch: no feedback';
       }
-    }, 500); // check every 500ms
+    }, 100); // run every 100ms — fast enough to catch feedback early
   }
 
   function stopFftDetector() {
-    if (fftTimer) { clearInterval(fftTimer); fftTimer=null; }
-    notchFreq=0;
-    notchX1=0; notchX2=0; notchY1=0; notchY2=0;
+    if (fftTimer){clearInterval(fftTimer);fftTimer=null;}
   }
 
-  // Feedback control (loop breaker as backup)
-  let duckActive   = true;
-  let duckGain     = 1.0;
-  let baseVolume   = 0.8;
-
-  // RMS history for growth detection
-  const RMS_HIST_LEN  = 16;
-  let rmsHistory      = new Float32Array(RMS_HIST_LEN);
-  let rmsHistIdx      = 0;
-  const GROWTH_RATIO  = 2.0;   // needs to double before we react
-  const DUCK_ATTACK   = 0.97;
-  const DUCK_RELEASE  = 0.08;  // ~0.3s restore
-
-  // Periodic loop-breaker: brief fade every N seconds to kill any accumulation
-  let loopBreakerTimer = null;
-  let loopBreakerActive = false;
-
   // ── DOM ────────────────────────────────────────────────────────────────────
-  const delaySlider   = document.getElementById('delaySlider');
-  const volumeSlider  = document.getElementById('volumeSlider');
-  const inGainSlider  = document.getElementById('inGainSlider');
-  const latencySlider = document.getElementById('latencySlider');
-  const echoSlider    = document.getElementById('echoGainSlider');
-  const delayVal      = document.getElementById('delayVal');
-  const volVal        = document.getElementById('volVal');
-  const inGainVal     = document.getElementById('inGainVal');
-  const latencyVal    = document.getElementById('latencyVal');
-  const echoVal       = document.getElementById('echoGainVal');
-  const latencyNote   = document.getElementById('latencyNote');
-  const detectBtn     = document.getElementById('detectBtn');
-  const mainBtn       = document.getElementById('mainBtn');
-  const statusDot     = document.getElementById('statusDot');
-  const statusText    = document.getElementById('statusText');
-  const bufferFill    = document.getElementById('bufferFill');
-  const bufferLabel   = document.getElementById('bufferLabel');
-  const canvas        = document.getElementById('viz');
-  const ctx2d         = canvas.getContext('2d');
+  const delaySlider  = document.getElementById('delaySlider');
+  const volumeSlider = document.getElementById('volumeSlider');
+  const inGainSlider = document.getElementById('inGainSlider');
+  const latencySlider= document.getElementById('latencySlider');
+  const echoSlider   = document.getElementById('echoGainSlider');
+  const delayVal     = document.getElementById('delayVal');
+  const volVal       = document.getElementById('volVal');
+  const inGainVal    = document.getElementById('inGainVal');
+  const latencyVal   = document.getElementById('latencyVal');
+  const echoVal      = document.getElementById('echoGainVal');
+  const latencyNote  = document.getElementById('latencyNote');
+  const detectBtn    = document.getElementById('detectBtn');
+  const mainBtn      = document.getElementById('mainBtn');
+  const statusDot    = document.getElementById('statusDot');
+  const statusText   = document.getElementById('statusText');
+  const bufferFill   = document.getElementById('bufferFill');
+  const bufferLabel  = document.getElementById('bufferLabel');
+  const canvas       = document.getElementById('viz');
+  const ctx2d        = canvas.getContext('2d');
 
-  // ── Slider fills ───────────────────────────────────────────────────────────
-  function fill(s, pct) { s.style.setProperty('--fill', Math.max(0,Math.min(100,pct)) + '%'); }
+  function fill(s,pct){s.style.setProperty('--fill',Math.max(0,Math.min(100,pct))+'%');}
 
-  function syncSliders() {
+  function syncSliders(){
     delayVal.textContent  = parseFloat(delaySlider.value).toFixed(1);
     volVal.textContent    = volumeSlider.value;
     inGainVal.textContent = parseFloat(inGainSlider.value).toFixed(1);
     latencyVal.textContent= latencySlider.value;
     echoVal.textContent   = parseFloat(echoSlider.value).toFixed(2);
     echoGain = parseFloat(echoSlider.value);
-    fill(delaySlider,   ((parseFloat(delaySlider.value)-0.1)/(10-0.1))*100);
-    fill(volumeSlider,  parseInt(volumeSlider.value));
-    fill(inGainSlider,  ((parseFloat(inGainSlider.value)-1)/(20-1))*100);
-    fill(latencySlider, ((parseInt(latencySlider.value)-5)/(400-5))*100);
+    fill(delaySlider,  ((parseFloat(delaySlider.value)-0.1)/(10-0.1))*100);
+    fill(volumeSlider, parseInt(volumeSlider.value));
+    fill(inGainSlider, ((parseFloat(inGainSlider.value)-1)/(20-1))*100);
+    fill(latencySlider,((parseInt(latencySlider.value)-5)/(400-5))*100);
   }
   syncSliders();
 
-  delaySlider.addEventListener('input', () => {
-    delayVal.textContent = parseFloat(delaySlider.value).toFixed(1);
-    fill(delaySlider, ((parseFloat(delaySlider.value)-0.1)/(10-0.1))*100);
+  delaySlider.addEventListener('input',()=>{
+    delayVal.textContent=parseFloat(delaySlider.value).toFixed(1);
+    fill(delaySlider,((parseFloat(delaySlider.value)-0.1)/(10-0.1))*100);
   });
-  volumeSlider.addEventListener('input', () => {
-    volVal.textContent = volumeSlider.value;
-    fill(volumeSlider, parseInt(volumeSlider.value));
-    baseVolume = parseInt(volumeSlider.value)/100;
-    if (outGainNode && !duckActive) outGainNode.gain.setTargetAtTime(baseVolume, audioCtx.currentTime, 0.05);
+  volumeSlider.addEventListener('input',()=>{
+    volVal.textContent=volumeSlider.value;
+    fill(volumeSlider,parseInt(volumeSlider.value));
+    baseVolume=parseInt(volumeSlider.value)/100;
+    if(outGainNode) outGainNode.gain.setTargetAtTime(baseVolume,audioCtx.currentTime,0.05);
   });
-  inGainSlider.addEventListener('input', () => {
-    const v = parseFloat(inGainSlider.value);
-    inGainVal.textContent = v.toFixed(1);
-    fill(inGainSlider, ((v-1)/(20-1))*100);
-    if (inGainNode) inGainNode.gain.setTargetAtTime(v, audioCtx.currentTime, 0.05);
+  inGainSlider.addEventListener('input',()=>{
+    const v=parseFloat(inGainSlider.value);
+    inGainVal.textContent=v.toFixed(1);
+    fill(inGainSlider,((v-1)/(20-1))*100);
+    if(inGainNode) inGainNode.gain.setTargetAtTime(v,audioCtx.currentTime,0.05);
   });
-  latencySlider.addEventListener('input', () => {
-    const v = parseInt(latencySlider.value);
-    latencyVal.textContent = v;
-    fill(latencySlider, ((v-5)/(400-5))*100);
-    latencyNote.textContent = 'Manually set.';
-    if (audioCtx) latN = Math.floor(v/1000*audioCtx.sampleRate);
+  latencySlider.addEventListener('input',()=>{
+    const v=parseInt(latencySlider.value);
+    latencyVal.textContent=v;
+    fill(latencySlider,((v-5)/(400-5))*100);
+    latencyNote.textContent='Manually set.';
+    if(audioCtx) latN=Math.floor(v/1000*audioCtx.sampleRate);
   });
-  echoSlider.addEventListener('input', () => {
-    echoGain = parseFloat(echoSlider.value);
-    echoVal.textContent = echoGain.toFixed(2);
+  echoSlider.addEventListener('input',()=>{
+    echoGain=parseFloat(echoSlider.value);
+    echoVal.textContent=echoGain.toFixed(2);
   });
 
-  // ── Mic constraints ────────────────────────────────────────────────────────
-  function getMicConstraints() {
-    const deviceId = document.getElementById('micSelect')?.value;
-    const base = { echoCancellation:false, noiseSuppression:false, autoGainControl:false };
-    return deviceId ? { ...base, deviceId:{ exact:deviceId } } : { ...base, facingMode:{ ideal:'environment' } };
+  // ── Mic ────────────────────────────────────────────────────────────────────
+  function getMicConstraints(){
+    const deviceId=document.getElementById('micSelect')?.value;
+    const base={echoCancellation:false,noiseSuppression:false,autoGainControl:false};
+    return deviceId?{...base,deviceId:{exact:deviceId}}:{...base,facingMode:{ideal:'environment'}};
   }
-  async function refreshMics() {
-    try {
-      const tmp = await navigator.mediaDevices.getUserMedia({audio:true,video:false});
+  async function refreshMics(){
+    try{
+      const tmp=await navigator.mediaDevices.getUserMedia({audio:true,video:false});
       tmp.getTracks().forEach(t=>t.stop());
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const mics = devices.filter(d=>d.kind==='audioinput');
-      const sel  = document.getElementById('micSelect');
-      sel.innerHTML = '<option value="">Default mic</option>';
-      mics.forEach((m,i) => {
-        const o = document.createElement('option');
-        o.value = m.deviceId; o.textContent = m.label||'Mic '+(i+1);
-        sel.appendChild(o);
-      });
-      document.getElementById('micNote').textContent = `Found ${mics.length} mic(s).`;
-    } catch(e) { document.getElementById('micNote').textContent = 'Error: '+e.message; }
+      const mics=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='audioinput');
+      const sel=document.getElementById('micSelect');
+      sel.innerHTML='<option value="">Default mic</option>';
+      mics.forEach((m,i)=>{const o=document.createElement('option');o.value=m.deviceId;o.textContent=m.label||'Mic '+(i+1);sel.appendChild(o);});
+      document.getElementById('micNote').textContent=`Found ${mics.length} mic(s).`;
+    }catch(e){document.getElementById('micNote').textContent='Error: '+e.message;}
   }
 
   // ── Chirp latency detection ────────────────────────────────────────────────
-  async function chirpDetect(ctx, micStream) {
-    const sr     = ctx.sampleRate;
-    const chirpN = Math.floor(40/1000*sr);
-    const listenN= Math.floor(500/1000*sr);
-    const cb     = ctx.createBuffer(1, chirpN, sr);
-    const cd     = cb.getChannelData(0);
-    for (let i=0;i<chirpN;i++) {
-      const env = 0.5-0.5*Math.cos(2*Math.PI*i/chirpN);
-      cd[i] = env * Math.sin(2*Math.PI*15000*i/sr);
-    }
-    const rec = new Float32Array(listenN); let rp=0;
+  async function chirpDetect(ctx,micStream){
+    const sr=ctx.sampleRate;
+    const chirpN=Math.floor(40/1000*sr), listenN=Math.floor(500/1000*sr);
+    const cb=ctx.createBuffer(1,chirpN,sr); const cd=cb.getChannelData(0);
+    for(let i=0;i<chirpN;i++){const e=0.5-0.5*Math.cos(2*Math.PI*i/chirpN);cd[i]=e*Math.sin(2*Math.PI*15000*i/sr);}
+    const rec=new Float32Array(listenN); let rp=0;
     const ms=ctx.createMediaStreamSource(micStream);
     const sp=ctx.createScriptProcessor(512,1,1);
     const sg=ctx.createGain(); sg.gain.value=0;
-    ms.connect(sp); sp.connect(sg); sg.connect(ctx.destination);
-    sp.onaudioprocess = ev => {
-      const d=ev.inputBuffer.getChannelData(0);
-      for(let i=0;i<d.length&&rp<listenN;i++) rec[rp++]=d[i];
-    };
-    const cs=ctx.createBufferSource(), cg=ctx.createGain(); cg.gain.value=0.9;
-    cs.buffer=cb; cs.connect(cg); cg.connect(ctx.destination); cs.start();
-    await new Promise(r=>setTimeout(r, listenN/sr*1000+80));
-    sp.disconnect(); ms.disconnect();
-    let rp2=0; for(let i=0;i<chirpN;i++) rp2+=cd[i]*cd[i];
+    ms.connect(sp);sp.connect(sg);sg.connect(ctx.destination);
+    sp.onaudioprocess=ev=>{const d=ev.inputBuffer.getChannelData(0);for(let i=0;i<d.length&&rp<listenN;i++)rec[rp++]=d[i];};
+    const cs=ctx.createBufferSource(),cg=ctx.createGain();cg.gain.value=0.9;
+    cs.buffer=cb;cs.connect(cg);cg.connect(ctx.destination);cs.start();
+    await new Promise(r=>setTimeout(r,listenN/sr*1000+80));
+    sp.disconnect();ms.disconnect();
+    let rp2=0;for(let i=0;i<chirpN;i++)rp2+=cd[i]*cd[i];
     const refRms=Math.sqrt(rp2/chirpN)||1;
-    let bestLag=Math.floor(5/1000*sr), bestScore=-Infinity;
+    let bestLag=Math.floor(5/1000*sr),bestScore=-Infinity;
     for(let lag=bestLag;lag<Math.floor(400/1000*sr)&&lag+chirpN<listenN;lag++){
-      let dot=0,mp=0;
-      for(let j=0;j<chirpN;j++){dot+=cd[j]*rec[lag+j];mp+=rec[lag+j]*rec[lag+j];}
+      let dot=0,mp=0;for(let j=0;j<chirpN;j++){dot+=cd[j]*rec[lag+j];mp+=rec[lag+j]*rec[lag+j];}
       const score=dot/(chirpN*refRms*(Math.sqrt(mp/chirpN)||1));
       if(score>bestScore){bestScore=score;bestLag=lag;}
     }
-    return { ms: Math.round(bestLag/sr*1000), score: bestScore, samples: bestLag };
+    return{ms:Math.round(bestLag/sr*1000),score:bestScore,samples:bestLag};
   }
 
-  async function runLatencyDetection() {
-    if (running) { setStatus('Stop first to calibrate'); return; }
+  async function runLatencyDetection(){
+    if(running){setStatus('Stop first');return;}
     detectBtn.textContent='⟳ DETECTING...';
-    latencyNote.textContent = 'Playing chirp...';
-    try {
-      const ds  = await navigator.mediaDevices.getUserMedia({audio:getMicConstraints(),video:false});
-      const dc  = new AudioContext();
-      const res = await chirpDetect(dc, ds);
-      ds.getTracks().forEach(t=>t.stop()); dc.close();
-      if (res.score > 0.02 && res.ms >= 5) {
-        const c = Math.max(5,Math.min(400,res.ms));
-        latencySlider.value=c; latencyVal.textContent=c;
+    try{
+      const ds=await navigator.mediaDevices.getUserMedia({audio:getMicConstraints(),video:false});
+      const dc=new AudioContext();
+      const res=await chirpDetect(dc,ds);
+      ds.getTracks().forEach(t=>t.stop());dc.close();
+      if(res.score>0.02&&res.ms>=5){
+        const c=Math.max(5,Math.min(400,res.ms));
+        latencySlider.value=c;latencyVal.textContent=c;
         fill(latencySlider,((c-5)/(400-5))*100);
         latencyNote.textContent=`✓ ${c}ms (score:${res.score.toFixed(3)})`;
-      } else {
-        latencyNote.textContent=`⚠ Weak (${res.score.toFixed(3)}, ${res.ms}ms) — using manual`;
+      }else{
+        latencyNote.textContent=`⚠ Weak (${res.score.toFixed(3)}, ${res.ms}ms)`;
       }
-    } catch(e){ latencyNote.textContent='Failed: '+e.message; }
+    }catch(e){latencyNote.textContent='Failed: '+e.message;}
     detectBtn.textContent='⟳ DETECT';
   }
 
-  // ── Feedback threshold detection ───────────────────────────────────────────
-  // Plays at increasing volume, measures if signal is growing (loop gain > 1)
-  // Sets output volume to 80% of threshold for safe headroom
-  async function detectFeedbackThreshold() {
-    if (running) { alert('Stop the app first'); return; }
-    const btn = document.getElementById('threshBtn');
-    btn.textContent = '⟳ TESTING...';
-    btn.disabled = true;
-    setStatus('Testing feedback threshold...');
-
-    try {
-      const ds  = await navigator.mediaDevices.getUserMedia({audio:getMicConstraints(),video:false});
-      const dc  = new AudioContext();
-      const sr  = dc.sampleRate;
-      const inG = parseFloat(inGainSlider.value);
-
-      // First get latency
-      setStatus('Step 1/3: Measuring latency...');
-      const latRes = await chirpDetect(dc, ds);
-      let measuredLatN = latRes.samples;
-      if (latRes.score > 0.02 && latRes.ms >= 5) {
-        const c = Math.max(5,Math.min(400,latRes.ms));
-        latencySlider.value=c; latencyVal.textContent=c;
+  // ── Auto setup ─────────────────────────────────────────────────────────────
+  async function detectFeedbackThreshold(){
+    if(running){alert('Stop first');return;}
+    const btn=document.getElementById('threshBtn');
+    btn.textContent='⟳ TESTING...'; btn.disabled=true;
+    setStatus('Auto setup...');
+    try{
+      const ds=await navigator.mediaDevices.getUserMedia({audio:getMicConstraints(),video:false});
+      const dc=new AudioContext(); const sr=dc.sampleRate;
+      const inG=parseFloat(inGainSlider.value);
+      setStatus('Step 1: Measuring latency...');
+      const latRes=await chirpDetect(dc,ds);
+      if(latRes.score>0.02&&latRes.ms>=5){
+        const c=Math.max(5,Math.min(400,latRes.ms));
+        latencySlider.value=c;latencyVal.textContent=c;
         fill(latencySlider,((c-5)/(400-5))*100);
         latencyNote.textContent=`✓ ${c}ms`;
-        measuredLatN = latRes.samples;
+        latN=latRes.samples;
       }
-
-      setStatus('Step 2/3: Finding feedback threshold...');
-
-      // Build a short delay buffer at the measured latency + test delay
-      const testDelayS  = parseFloat(delaySlider.value);
-      const testBufN    = Math.floor(testDelayS * sr);
-      const testRingBuf = new Float32Array(testBufN);
-      let   testW=0, testR=0, testFilled=false;
-      const testRefSize = Math.max(measuredLatN*4, 32768);
-      const testRefBuf  = new Float32Array(testRefSize);
-      let   testRefW    = 0;
-
-      const micSrc  = dc.createMediaStreamSource(ds);
-      const inGain  = dc.createGain(); inGain.gain.value = inG;
-      const outGain = dc.createGain(); outGain.gain.value = 0; // start silent
-      const proc    = dc.createScriptProcessor(4096,1,1);
-
-      // Measure RMS over a window
-      const windowN = sr; // 1 second window
-      let   rmsBuf  = new Float32Array(windowN);
-      let   rmsPos  = 0;
-
-      proc.onaudioprocess = e => {
-        const inp = e.inputBuffer.getChannelData(0);
-        const out = e.outputBuffer.getChannelData(0);
-        for (let i=0;i<inp.length;i++) {
-          const mic = inp[i] / inG;
-          // Simple delay — no AEC during threshold detection
-          testRingBuf[testW] = mic;
-          testW = (testW+1)%testBufN;
-          if (!testFilled && testW===0) testFilled=true;
-          const o = testFilled ? testRingBuf[testR] : 0;
-          testR = (testR+1)%testBufN;
-          out[i] = o;
-          rmsBuf[rmsPos%windowN] = mic*mic;
-          rmsPos++;
+      setStatus('Step 2: Finding feedback threshold...');
+      const testBufN=Math.floor(parseFloat(delaySlider.value)*sr);
+      const testRing=new Float32Array(testBufN);
+      let tw=0,tr=0,tf=false;
+      const testRef=new Float32Array(Math.max(latN*4,32768)); let trW=0;
+      const micSrc=dc.createMediaStreamSource(ds);
+      const iGain=dc.createGain(); iGain.gain.value=inG;
+      const oGain=dc.createGain(); oGain.gain.value=0;
+      const proc=dc.createScriptProcessor(4096,1,1);
+      const winN=sr; let rmsBuf=new Float32Array(winN); let rmsP=0;
+      proc.onaudioprocess=e=>{
+        const inp=e.inputBuffer.getChannelData(0),out=e.outputBuffer.getChannelData(0);
+        for(let i=0;i<inp.length;i++){
+          const m=inp[i]/inG;
+          testRing[tw]=m; tw=(tw+1)%testBufN; if(!tf&&tw===0)tf=true;
+          const o=tf?testRing[tr]:0; tr=(tr+1)%testBufN; out[i]=o;
+          rmsBuf[rmsP%winN]=m*m; rmsP++;
         }
       };
-
-      micSrc.connect(inGain); inGain.connect(proc);
-      proc.connect(outGain); outGain.connect(dc.destination);
-
-      // Sweep volume from 10% to 90% in steps, measure growth
-      let thresholdPct = 80; // default if not found
-      const steps = [10,20,30,40,50,60,70,80,90];
-
-      for (const pct of steps) {
-        outGain.gain.setTargetAtTime(pct/100, dc.currentTime, 0.1);
-        // Wait 2s for signal to settle
+      micSrc.connect(iGain);iGain.connect(proc);proc.connect(oGain);oGain.connect(dc.destination);
+      let thresholdPct=80;
+      for(const pct of [20,30,40,50,60,70,80,90]){
+        oGain.gain.setTargetAtTime(pct/100,dc.currentTime,0.1);
         await new Promise(r=>setTimeout(r,2000));
-        // Sample RMS now
-        const rms1 = Math.sqrt(rmsBuf.reduce((a,b)=>a+b,0)/windowN);
-        await new Promise(r=>setTimeout(r,1000));
-        const rms2 = Math.sqrt(rmsBuf.reduce((a,b)=>a+b,0)/windowN);
-        const growing = rms2 > rms1 * 1.5 && rms2 > 0.02; // 50% growth + must be audible
-        setStatus(`Step 2/3: Testing ${pct}%... ${growing?'FEEDBACK':'ok'}`);
-        if (growing) {
-          thresholdPct = pct;
-          break;
-        }
+        const rms1=Math.sqrt(rmsBuf.reduce((a,b)=>a+b,0)/winN);
+        await new Promise(r=>setTimeout(r,1500));
+        const rms2=Math.sqrt(rmsBuf.reduce((a,b)=>a+b,0)/winN);
+        setStatus(`Testing ${pct}%... ${rms2>rms1*1.5&&rms2>0.02?'FEEDBACK':'ok'}`);
+        if(rms2>rms1*1.5&&rms2>0.02){thresholdPct=pct;break;}
       }
-
-      outGain.gain.setTargetAtTime(0, dc.currentTime, 0.05);
-      await new Promise(r=>setTimeout(r,200));
-      proc.disconnect(); micSrc.disconnect(); inGain.disconnect(); outGain.disconnect();
-      ds.getTracks().forEach(t=>t.stop()); dc.close();
-
-      // Set output volume to 70% of threshold for safe headroom
-      const safePct = Math.max(35, Math.round(thresholdPct * 0.8));
-      volumeSlider.value = safePct;
-      volVal.textContent = safePct;
-      fill(volumeSlider, safePct);
-
-      setStatus(`Step 3/3: Done! Threshold=${thresholdPct}%, safe volume=${safePct}%`);
-      document.getElementById('threshNote').textContent = `thresh:${thresholdPct}% → vol:${safePct}%`;
-
-    } catch(err) {
-      setStatus('Threshold detection failed: '+err.message);
-      console.error(err);
-    }
-    btn.textContent = '⟳ AUTO SETUP';
-    btn.disabled = false;
-  }
-
-  // ── Loop breaker ──────────────────────────────────────────────────────────
-  function triggerLoopBreaker() {
-    if (loopBreakerActive || !outGainNode || !audioCtx) return;
-    loopBreakerActive = true;
-    // Fade out quickly
-    outGainNode.gain.setTargetAtTime(0, audioCtx.currentTime, 0.02);
-    // Hold for 200ms then restore
-    setTimeout(() => {
-      if (outGainNode && audioCtx) {
-        outGainNode.gain.setTargetAtTime(baseVolume, audioCtx.currentTime, 0.1);
-      }
-      // Reset RMS history so we start fresh
-      rmsHistory.fill(0);
-      rmsHistIdx = 0;
-      setTimeout(() => { loopBreakerActive = false; }, 500);
-    }, 200);
-  }
-
-  // Periodic loop breaker — fires every 8s as a safety net
-  function startLoopBreaker() {
-    stopLoopBreaker();
-    loopBreakerTimer = setInterval(() => {
-      if (!running || !outGainNode) return;
-      // Only fire if there's actually signal (not dead silence)
-      if (dbgMic > 0.0001) triggerLoopBreaker();
-    }, 8000);
-  }
-  function stopLoopBreaker() {
-    if (loopBreakerTimer) { clearInterval(loopBreakerTimer); loopBreakerTimer = null; }
-    loopBreakerActive = false;
+      oGain.gain.setTargetAtTime(0,dc.currentTime,0.05);
+      await new Promise(r=>setTimeout(r,300));
+      proc.disconnect();micSrc.disconnect();ds.getTracks().forEach(t=>t.stop());dc.close();
+      const safePct=Math.max(35,Math.round(thresholdPct*0.8));
+      volumeSlider.value=safePct; volVal.textContent=safePct;
+      fill(volumeSlider,safePct); baseVolume=safePct/100;
+      setStatus(`Done! Threshold=${thresholdPct}%, safe vol=${safePct}%`);
+      document.getElementById('threshNote').textContent=`thresh:${thresholdPct}% → vol:${safePct}%`;
+    }catch(err){setStatus('Setup failed: '+err.message);console.error(err);}
+    btn.textContent='🔧 AUTO SETUP'; btn.disabled=false;
   }
 
   // ── Debug timer ────────────────────────────────────────────────────────────
-  let debugTimer = null;
-  function startDebugTimer() {
+  let debugTimer=null;
+  function startDebugTimer(){
     stopDebugTimer();
-    debugTimer = setInterval(() => {
-      const db = v => v>0?(20*Math.log10(Math.sqrt(v))).toFixed(1)+'dB':'-inf';
-      document.getElementById('debugInfo').innerHTML =
-        `sr:${dbgSR} &nbsp; latN:${latN} &nbsp; echo:${echoGain.toFixed(2)} &nbsp; spkGain:${dbgSpkGain.toFixed(2)}<br>`+
-        `mic:${db(dbgMic)} &nbsp; ref:${db(dbgRef)} &nbsp; clean:${db(dbgClean)} &nbsp; duck:${(duckGain*100).toFixed(0)}%`;
-    }, 250);
+    debugTimer=setInterval(()=>{
+      const db=v=>v>0?(20*Math.log10(Math.sqrt(v))).toFixed(1)+'dB':'-inf';
+      document.getElementById('debugInfo').innerHTML=
+        `sr:${dbgSR} &nbsp; latN:${latN} &nbsp; echo:${echoGain.toFixed(2)} &nbsp; notches:${notches.length}<br>`+
+        `mic:${db(dbgMic)} &nbsp; ref:${db(dbgRef)} &nbsp; clean:${db(dbgClean)} &nbsp; vol:${(baseVolume*100).toFixed(0)}%`;
+    },250);
   }
-  function stopDebugTimer() {
-    if (debugTimer){clearInterval(debugTimer);debugTimer=null;}
-    document.getElementById('debugInfo').textContent='—';
-  }
+  function stopDebugTimer(){if(debugTimer){clearInterval(debugTimer);debugTimer=null;}document.getElementById('debugInfo').textContent='—';}
 
-  // ── Save last 10s ──────────────────────────────────────────────────────────
-  function saveLast() {
-    if (!rollingBuf||(!rollingFull&&rollingW===0)) return;
-    const sr   = audioCtx?.sampleRate||48000;
-    const size = rollingFull?rollingSize:rollingW;
-    const out  = new Float32Array(size);
-    if (rollingFull){out.set(rollingBuf.slice(rollingW));out.set(rollingBuf.slice(0,rollingW),rollingSize-rollingW);}
+  // ── Save / Upload ──────────────────────────────────────────────────────────
+  function saveLast(){
+    if(!rollingBuf||(!rollingFull&&rollingW===0)) return;
+    const sr=audioCtx?.sampleRate||48000;
+    const size=rollingFull?rollingSize:rollingW;
+    const out=new Float32Array(size);
+    if(rollingFull){out.set(rollingBuf.slice(rollingW));out.set(rollingBuf.slice(0,rollingW),rollingSize-rollingW);}
     else out.set(rollingBuf.slice(0,rollingW));
-    const gain = inGainNode?.gain.value||1;
-    for(let i=0;i<out.length;i++) out[i]=Math.max(-1,Math.min(1,out[i]*gain));
-    encodeAndDownload(out, sr, 'last-10s.wav');
+    const gain=inGainNode?.gain.value||1;
+    for(let i=0;i<out.length;i++)out[i]=Math.max(-1,Math.min(1,out[i]*gain));
+    encodeAndDownload(out,sr,'last-10s.wav');
     document.getElementById('saveStatus').textContent=`✓ Saved ${(size/sr).toFixed(1)}s`;
   }
 
-  function encodeAndDownload(samples, sr, filename) {
+  function encodeAndDownload(samples,sr,filename){
     const buf=new ArrayBuffer(44+samples.length*2);
     const v=new DataView(buf);
     const ws=(o,s)=>{for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i));};
@@ -930,46 +841,27 @@
     v.setUint32(24,sr,true);v.setUint32(28,sr*2,true);
     v.setUint16(32,2,true);v.setUint16(34,16,true);
     ws(36,'data');v.setUint32(40,samples.length*2,true);
-    for(let i=0;i<samples.length;i++){
-      const s=Math.max(-1,Math.min(1,samples[i]));
-      v.setInt16(44+i*2,s<0?s*0x8000:s*0x7FFF,true);
-    }
+    for(let i=0;i<samples.length;i++){const s=Math.max(-1,Math.min(1,samples[i]));v.setInt16(44+i*2,s<0?s*0x8000:s*0x7FFF,true);}
     const a=document.createElement('a');
     a.href=URL.createObjectURL(new Blob([buf],{type:'audio/wav'}));
-    a.download=filename; a.click();
+    a.download=filename;a.click();
   }
 
-  // ── Debug upload ───────────────────────────────────────────────────────────
-  async function uploadDebugBundle() {
+  async function uploadDebugBundle(){
     const btn=document.getElementById('debugUploadBtn');
     const result=document.getElementById('uploadResult');
-    result.style.display='block';
-    result.textContent='Building...';
-    btn.disabled=true;
-    try {
-      const db = v => v>0?(20*Math.log10(Math.sqrt(v))).toFixed(1)+'dB':'-inf';
-      const bundle = {
-        timestamp: new Date().toISOString(),
-        version: document.querySelector('[style*="background:var(--accent)"]')?.textContent?.trim()||'v4.2',
-        settings: {
-          delayS: parseFloat(delaySlider.value),
-          outputVolPct: parseInt(volumeSlider.value),
-          inputGainX: parseFloat(inGainSlider.value),
-          latencyMs: parseInt(latencySlider.value),
-          echoGain,
-          sampleRate: audioCtx?.sampleRate||48000,
-          latNSamples: latN
-        },
-        metrics: {
-          micRMS: db(dbgMic), refRMS: db(dbgRef), cleanRMS: db(dbgClean),
-          spkGain: dbgSpkGain.toFixed(3),
-          refEmpty: dbgRef===0,
-          aecWorking: dbgRef>0 && dbgClean<dbgMic*0.5
-        },
-        audio: (()=>{
-          if (!rollingBuf||(!rollingFull&&rollingW===0)) return {note:'no audio captured'};
-          const sr=audioCtx?.sampleRate||48000;
-          const size=rollingFull?rollingSize:rollingW;
+    result.style.display='block'; result.textContent='Building...'; btn.disabled=true;
+    try{
+      const db=v=>v>0?(20*Math.log10(Math.sqrt(v))).toFixed(1)+'dB':'-inf';
+      const bundle={
+        timestamp:new Date().toISOString(),
+        version:document.querySelector('[style*="background:var(--accent)"]')?.textContent?.trim()||'v5.2',
+        settings:{delayS:parseFloat(delaySlider.value),outputVolPct:parseInt(volumeSlider.value),inputGainX:parseFloat(inGainSlider.value),latencyMs:parseInt(latencySlider.value),echoGain,sampleRate:audioCtx?.sampleRate||48000,latNSamples:latN},
+        metrics:{micRMS:db(dbgMic),refRMS:db(dbgRef),cleanRMS:db(dbgClean),spkGain:dbgSpkGain.toFixed(3),refEmpty:dbgRef===0,aecWorking:dbgRef>0&&dbgClean<dbgMic*0.5},
+        notches:notches.map(n=>({freq:n.freq,strength:(n.strength*100).toFixed(0)+'%'})),
+        audio:(()=>{
+          if(!rollingBuf||(!rollingFull&&rollingW===0))return{note:'no audio captured'};
+          const sr=audioCtx?.sampleRate||48000,size=rollingFull?rollingSize:rollingW;
           const out=new Float32Array(size);
           if(rollingFull){out.set(rollingBuf.slice(rollingW));out.set(rollingBuf.slice(0,rollingW),rollingSize-rollingW);}
           else out.set(rollingBuf.slice(0,rollingW));
@@ -977,139 +869,105 @@
           let peak=0,rms=0;
           for(let i=0;i<out.length;i++){out[i]=Math.max(-1,Math.min(1,out[i]*gain));if(Math.abs(out[i])>peak)peak=Math.abs(out[i]);rms+=out[i]*out[i];}
           rms=Math.sqrt(rms/out.length);
-          return {durationS:(size/sr).toFixed(1),peakDb:peak>0?(20*Math.log10(peak)).toFixed(1)+'dB':'-inf',rmsDb:rms>0?(20*Math.log10(rms)).toFixed(1)+'dB':'-inf'};
+          return{durationS:(size/sr).toFixed(1),peakDb:peak>0?(20*Math.log10(peak)).toFixed(1)+'dB':'-inf',rmsDb:rms>0?(20*Math.log10(rms)).toFixed(1)+'dB':'-inf'};
         })(),
-        diagnosis: dbgRef===0?'REF EMPTY':dbgClean<dbgMic*0.5?'AEC WORKING':'Not cancelling enough'
+        diagnosis:dbgRef===0?'REF EMPTY':dbgClean<dbgMic*0.5?'AEC WORKING':'Not cancelling enough'
       };
       const json=JSON.stringify(bundle,null,2);
       const blob=new Blob([json],{type:'application/json'});
       result.textContent='Uploading...';
       let url=null;
-      try {
-        const fd=new FormData(); fd.append('file',blob,'echo-debug.json');
-        const r=await fetch('https://0x0.st',{method:'POST',body:fd});
-        if(r.ok) url=(await r.text()).trim();
-      } catch(e){console.warn(e);}
-      if(!url){
-        try{
-          const r=await fetch('https://transfer.sh/echo-debug.json',{method:'PUT',body:blob,headers:{'Max-Days':'1'}});
-          if(r.ok) url=(await r.text()).trim();
-        } catch(e){console.warn(e);}
-      }
-      if(url){
-        result.innerHTML=`\u2713 Done!<br><br><strong style="font-size:17px;">${url}</strong><br><br>Paste into Claude chat.`;
-      } else {
-        result.innerHTML=`Upload failed. Copy manually:<br><textarea style="width:100%;height:120px;background:#0a0a0a;color:#44aaff;border:1px solid #333;font-size:10px;padding:6px;" readonly>${json}</textarea>`;
-      }
-    } catch(err){result.textContent='Error: '+err.message;}
+      try{const fd=new FormData();fd.append('file',blob,'echo-debug.json');const r=await fetch('https://0x0.st',{method:'POST',body:fd});if(r.ok)url=(await r.text()).trim();}catch(e){console.warn(e);}
+      if(!url){try{const r=await fetch('https://transfer.sh/echo-debug.json',{method:'PUT',body:blob,headers:{'Max-Days':'1'}});if(r.ok)url=(await r.text()).trim();}catch(e){console.warn(e);}}
+      if(url){result.innerHTML=`\u2713 Done!<br><br><strong style="font-size:17px;">${url}</strong><br><br>Paste into Claude chat.`;}
+      else{result.innerHTML=`Upload failed.<br><textarea style="width:100%;height:120px;background:#0a0a0a;color:#44aaff;border:1px solid #333;font-size:10px;padding:6px;" readonly>${json}</textarea>`;}
+    }catch(err){result.textContent='Error: '+err.message;}
     btn.disabled=false;
   }
 
   // ── Main audio engine ──────────────────────────────────────────────────────
-  async function toggle() { if(!running) await start(); else stop(); }
+  async function toggle(){if(!running)await start();else stop();}
 
-  async function start() {
-    try {
+  async function start(){
+    try{
       setStatus('Opening mic...');
-      stream = await navigator.mediaDevices.getUserMedia({audio:getMicConstraints(),video:false});
-      audioCtx = new AudioContext();
-      const sr = audioCtx.sampleRate;
-      const delaySec = parseFloat(delaySlider.value);
-      const vol      = parseInt(volumeSlider.value)/100;
-      const inGain   = parseFloat(inGainSlider.value);
-      latN = Math.floor(parseInt(latencySlider.value)/1000*sr);
-      baseVolume = vol;
-      echoGain = parseFloat(echoSlider.value);
+      stream=await navigator.mediaDevices.getUserMedia({audio:getMicConstraints(),video:false});
+      audioCtx=new AudioContext();
+      const sr=audioCtx.sampleRate;
+      const delaySec=parseFloat(delaySlider.value);
+      const vol=parseInt(volumeSlider.value)/100;
+      const inGain=parseFloat(inGainSlider.value);
+      latN=Math.floor(parseInt(latencySlider.value)/1000*sr);
+      echoGain=parseFloat(echoSlider.value);
+      baseVolume=vol;
 
-      bufN    = Math.floor(delaySec*sr);
-      ringBuf = new Float32Array(bufN);
-      wPos=0; rPos=0; filled=false;
-
-      refBufSize = Math.max(latN*4, 32768);
-      refBuf     = new Float32Array(refBufSize);
-      refW=0;
-
-      rollingSize = Math.floor(10*sr);
-      rollingBuf  = new Float32Array(rollingSize);
-      rollingW=0; rollingFull=false;
-
+      bufN=Math.floor(delaySec*sr);
+      ringBuf=new Float32Array(bufN); wPos=0;rPos=0;filled=false;
+      refBufSize=Math.max(latN*4,32768);
+      refBuf=new Float32Array(refBufSize); refW=0;
+      rollingSize=Math.floor(10*sr);
+      rollingBuf=new Float32Array(rollingSize); rollingW=0;rollingFull=false;
+      fftBuf=new Float32Array(FFT_SIZE); fftPos=0;
+      notches=[];
       dbgSR=sr;
 
-      sourceNode  = audioCtx.createMediaStreamSource(stream);
-      analyser    = audioCtx.createAnalyser(); analyser.fftSize=256;
-      inGainNode  = audioCtx.createGain(); inGainNode.gain.value=inGain;
-      outGainNode = audioCtx.createGain(); outGainNode.gain.value=vol;
+      sourceNode=audioCtx.createMediaStreamSource(stream);
+      analyser=audioCtx.createAnalyser(); analyser.fftSize=256;
+      inGainNode=audioCtx.createGain(); inGainNode.gain.value=inGain;
+      outGainNode=audioCtx.createGain(); outGainNode.gain.value=vol;
 
-      procNode = audioCtx.createScriptProcessor(4096,1,1);
-      procNode.onaudioprocess = e => {
-        const inp     = e.inputBuffer.getChannelData(0);
-        const out     = e.outputBuffer.getChannelData(0);
-        const oGain   = outGainNode.gain.value;
-        const iGain   = inGainNode.gain.value;
+      procNode=audioCtx.createScriptProcessor(4096,1,1);
+      procNode.onaudioprocess=e=>{
+        const inp=e.inputBuffer.getChannelData(0);
+        const out=e.outputBuffer.getChannelData(0);
+        const oGain=outGainNode.gain.value;
+        const iGain=inGainNode.gain.value;
         let micPow=0,refPow=0,cleanPow=0;
 
         for(let i=0;i<inp.length;i++){
-          const micRaw = inp[i]/iGain;
+          const micRaw=inp[i]/iGain;
 
-          // Rolling buffer — raw mic
+          // Rolling buffer
           rollingBuf[rollingW]=micRaw;
           rollingW=(rollingW+1)%rollingSize;
-          if(!rollingFull&&rollingW===0) rollingFull=true;
+          if(!rollingFull&&rollingW===0)rollingFull=true;
 
-          // AEC: look up what speaker played latN samples ago
-          const refIdx   = (refW-latN+refBufSize*4)%refBufSize;
-          const spkAtMic = refBuf[refIdx]*echoGain;
-          const clean    = micRaw-spkAtMic;
+          // AEC
+          const refIdx=(refW-latN+refBufSize*4)%refBufSize;
+          const spkAtMic=refBuf[refIdx]*echoGain;
+          const clean=micRaw-spkAtMic;
 
-          micPow   += micRaw*micRaw;
-          refPow   += spkAtMic*spkAtMic;
-          cleanPow += clean*clean;
+          micPow+=micRaw*micRaw;
+          refPow+=spkAtMic*spkAtMic;
+          cleanPow+=clean*clean;
 
-          // Write original mic to delay buffer (no circular dependency)
+          // Delay — store original mic
           ringBuf[wPos]=micRaw;
           wPos=(wPos+1)%bufN;
-          if(!filled&&wPos===0) filled=true;
+          if(!filled&&wPos===0)filled=true;
 
-          // Read delayed output — apply notch filter if feedback detected
-          let outSample = filled?ringBuf[rPos]:0;
+          // Read delayed output
+          let outSample=filled?ringBuf[rPos]:0;
           rPos=(rPos+1)%bufN;
-          if (notchFreq > 0) outSample = applyNotch(outSample);
+
+          // Apply notch filters if active
+          if(notchActive&&notches.length>0) outSample=applyNotches(outSample);
+
           out[i]=outSample;
 
-          // Feed FFT buffer
-          if (fftBuf) { fftBuf[fftPos%FFT_SIZE]=outSample; fftPos++; }
-
-          // Store speaker output in refBuf
+          // Store in ref buffer + FFT buffer
           refBuf[refW]=outSample*oGain;
           refW=(refW+1)%refBufSize;
+          if(fftBuf){fftBuf[fftPos%FFT_SIZE]=outSample;fftPos++;}
         }
 
         const n=inp.length;
-        dbgMic=micPow/n; dbgRef=refPow/n; dbgClean=cleanPow/n; dbgSpkGain=oGain*iGain;
-
-        // Feedback detection: track RMS growth
-        if (duckActive && !loopBreakerActive) {
-          const micRMS = Math.sqrt(micPow/n);
-          rmsHistory[rmsHistIdx % RMS_HIST_LEN] = micRMS;
-          rmsHistIdx++;
-
-          if (rmsHistIdx >= RMS_HIST_LEN * 2) {
-            const half = Math.floor(RMS_HIST_LEN / 2);
-            let oldAvg = 0, newAvg = 0;
-            for (let h = 0; h < half; h++) {
-              oldAvg += rmsHistory[(rmsHistIdx - RMS_HIST_LEN + h + RMS_HIST_LEN*4) % RMS_HIST_LEN];
-              newAvg += rmsHistory[(rmsHistIdx - half + h + RMS_HIST_LEN*4) % RMS_HIST_LEN];
-            }
-            oldAvg /= half; newAvg /= half;
-            const isFeedback = oldAvg > 0.015 && newAvg > oldAvg * GROWTH_RATIO;
-            if (isFeedback) triggerLoopBreaker();
-          }
-        }
+        dbgMic=micPow/n;dbgRef=refPow/n;dbgClean=cleanPow/n;dbgSpkGain=oGain*iGain;
 
         if(filled){
           bufferFill.style.width='100%';
           bufferLabel.textContent=`Buffer: ${delaySec.toFixed(1)}s / ${delaySec.toFixed(1)}s`;
-        } else {
+        }else{
           bufferFill.style.width=((wPos/bufN)*100)+'%';
           bufferLabel.textContent=`Buffer: ${(wPos/sr).toFixed(1)}s / ${delaySec.toFixed(1)}s`;
         }
@@ -1125,29 +983,24 @@
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v5.1');
+      setStatus('Live — v5.2');
       startDebugTimer();
-      startLoopBreaker();
       startFftDetector(sr);
       drawViz();
-    } catch(err){
-      setStatus('Error: '+err.message);
-      console.error(err);
-    }
+    }catch(err){setStatus('Error: '+err.message);console.error(err);}
   }
 
-  function stop() {
-    stopLoopBreaker();
+  function stop(){
     stopFftDetector();
     stopDebugTimer();
-    if(procNode)    {procNode.disconnect();    procNode=null;}
-    if(inGainNode)  {inGainNode.disconnect();  inGainNode=null;}
-    if(outGainNode) {outGainNode.disconnect(); outGainNode=null;}
-    if(sourceNode)  {sourceNode.disconnect();  sourceNode=null;}
-    if(stream)      {stream.getTracks().forEach(t=>t.stop()); stream=null;}
-    if(audioCtx)    {audioCtx.close(); audioCtx=null;}
-    ringBuf=null; refBuf=null; rollingBuf=null;
-    running=false; filled=false;
+    if(procNode){procNode.disconnect();procNode=null;}
+    if(inGainNode){inGainNode.disconnect();inGainNode=null;}
+    if(outGainNode){outGainNode.disconnect();outGainNode=null;}
+    if(sourceNode){sourceNode.disconnect();sourceNode=null;}
+    if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
+    if(audioCtx){audioCtx.close();audioCtx=null;}
+    ringBuf=null;refBuf=null;rollingBuf=null;fftBuf=null;notches=[];
+    running=false;filled=false;
     mainBtn.textContent='▶ Start Listening';
     mainBtn.classList.remove('active','stop');
     statusDot.classList.remove('live');
@@ -1155,14 +1008,15 @@
     bufferFill.style.width='0%';
     bufferLabel.textContent='Buffer: 0.0s / 0.0s';
     ctx2d.clearRect(0,0,canvas.width,canvas.height);
+    document.getElementById('notchNote').textContent='notch: idle';
   }
 
   function setStatus(msg){statusText.textContent=msg;}
 
   function drawViz(){
-    if(!running||!analyser) return;
+    if(!running||!analyser)return;
     requestAnimationFrame(drawViz);
-    const W=canvas.clientWidth*devicePixelRatio, H=canvas.clientHeight*devicePixelRatio;
+    const W=canvas.clientWidth*devicePixelRatio,H=canvas.clientHeight*devicePixelRatio;
     if(canvas.width!==W||canvas.height!==H){canvas.width=W;canvas.height=H;}
     const data=new Uint8Array(analyser.frequencyBinCount);
     analyser.getByteTimeDomainData(data);
@@ -1172,13 +1026,13 @@
     ctx2d.shadowColor='rgba(0,255,170,0.4)';
     ctx2d.shadowBlur=6;
     ctx2d.beginPath();
-    const sw=W/data.length; let x=0;
+    const sw=W/data.length;let x=0;
     for(let i=0;i<data.length;i++){
       const y=(data[i]/128.0)*(H/2);
-      if(i===0) ctx2d.moveTo(x,y); else ctx2d.lineTo(x,y);
+      if(i===0)ctx2d.moveTo(x,y);else ctx2d.lineTo(x,y);
       x+=sw;
     }
-    ctx2d.stroke(); ctx2d.shadowBlur=0;
+    ctx2d.stroke();ctx2d.shadowBlur=0;
   }
 
   if('serviceWorker' in navigator)
