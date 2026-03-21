@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v3.4</div>
+    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v3.5</div>
   </header>
 
   <!-- Delay control -->
@@ -663,55 +663,55 @@
 
   // ── Save last 10s ──────────────────────────────────────────────────────────
   function sweepLatency() {
-    // Try latency values from 50ms to 400ms in 5ms steps
-    // Find the one that gives lowest clean power (most cancellation)
-    if (dbgRef <= 0 || dbgMic <= 0) {
-      document.getElementById('sweepNote').textContent = 'Need audio playing first';
-      return;
-    }
-    if (!refBuf || !ringBuf) {
+    if (!refBuf || !rollingBuf) {
       document.getElementById('sweepNote').textContent = 'Start app first';
       return;
     }
-
-    const sr = audioCtx.sampleRate;
-    const outGain = outGainNode.gain.value;
-    const inGain  = inGainNode.gain.value;
-    const testGain = echoGain;
-
-    // Sample a block of current mic and ref data
-    const blockN = 4096;
-    let bestLatN = latN, bestPow = Infinity;
-
-    for (let ms = 50; ms <= 400; ms += 5) {
-      const testLatN = Math.floor(ms / 1000 * sr);
-      let cleanPow = 0;
-
-      for (let i = 0; i < blockN; i++) {
-        // Current mic sample (from rolling buffer, chronological)
-        const micIdx = rollingFull
-          ? (rollingW - blockN + i + rollingSize * 4) % rollingSize
-          : Math.max(0, rollingW - blockN + i);
-        const mic = rollingBuf[micIdx];
-
-        // Ref sample testLatN ago
-        const refIdx = (refW - testLatN + refBufSize * 4) % refBufSize;
-        const spk = refBuf[refIdx] * testGain;
-        const clean = mic - spk;
-        cleanPow += clean * clean;
-      }
-
-      if (cleanPow < bestPow) {
-        bestPow = cleanPow;
-        bestLatN = testLatN;
-      }
+    if (!rollingFull && rollingW < 8192) {
+      document.getElementById('sweepNote').textContent = 'Wait for audio...';
+      return;
     }
 
-    const bestMs = Math.round(bestLatN / sr * 1000);
-    latN = bestLatN;
-    latencySlider.value = bestMs;
-    latencyVal.textContent = bestMs;
-    fill(latencySlider, ((bestMs - 5) / (400 - 5)) * 100);
+    const sr      = audioCtx.sampleRate;
+    const blockN  = 8192;  // fixed snapshot size
+
+    // Take a fixed snapshot of mic and ref RIGHT NOW — won't change during sweep
+    const micSnap = new Float32Array(blockN);
+    const refSnap = new Float32Array(blockN);
+
+    for (let i = 0; i < blockN; i++) {
+      // mic: last blockN samples from rolling buffer in chronological order
+      const mi = (rollingW - blockN + i + rollingSize * 4) % rollingSize;
+      micSnap[i] = rollingBuf[mi];
+
+      // ref: last blockN samples from refBuf in chronological order
+      const ri = (refW - blockN + i + refBufSize * 4) % refBufSize;
+      refSnap[i] = refBuf[ri];
+    }
+
+    // Now sweep latency — for each lag, shift refSnap relative to micSnap
+    // and measure how much power remains after subtraction
+    const minLag = Math.floor(10  / 1000 * sr);
+    const maxLag = Math.floor(400 / 1000 * sr);
+    let bestLag = latN, bestPow = Infinity;
+
+    for (let lag = minLag; lag <= maxLag; lag += Math.floor(sr / 1000)) {
+      // lag = how many samples ahead refSnap is relative to micSnap
+      // i.e. refSnap[i - lag] is what the mic hears at micSnap[i]
+      let pow = 0;
+      const start = lag;
+      for (let i = start; i < blockN; i++) {
+        const clean = micSnap[i] - refSnap[i - lag] * echoGain;
+        pow += clean * clean;
+      }
+      if (pow < bestPow) { bestPow = pow; bestLag = lag; }
+    }
+
+    const bestMs = Math.round(bestLag / sr * 1000);
+    latN = bestLag;
+    latencySlider.value = Math.min(400, bestMs);
+    latencyVal.textContent = Math.min(400, bestMs);
+    fill(latencySlider, ((Math.min(400, bestMs) - 5) / (400 - 5)) * 100);
     latencyNote.textContent = `✓ Swept to ${bestMs}ms`;
     document.getElementById('sweepNote').textContent = `→ ${bestMs}ms`;
   }
@@ -1113,7 +1113,7 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v3.4');
+      setStatus('Live — v3.5');
       startDebugTimer();
       drawViz();
 
