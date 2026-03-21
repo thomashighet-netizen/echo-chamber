@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v3.9</div>
+    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v4.0</div>
   </header>
 
   <!-- Delay control -->
@@ -387,6 +387,7 @@
     </div>
     <div style="font-size:9px;color:var(--dim);margin-top:6px;">How much speaker bleed to subtract. 0=off. Use Auto to measure.</div>
     <button onclick="autoEchoGain()" style="font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.15em;background:transparent;border:1px solid var(--accent);color:var(--accent);padding:4px 10px;border-radius:2px;cursor:pointer;margin-top:6px;">⟳ AUTO</button>
+    <button id="adaptBtn" onclick="toggleAdaptive()" style="font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.15em;background:transparent;border:1px solid var(--dim);color:var(--dim);padding:4px 10px;border-radius:2px;cursor:pointer;margin-top:6px;margin-left:4px;">⟳ ADAPT</button>
     <span style="font-size:9px;color:var(--dim);margin-left:8px;" id="autoNote"></span>
   </div>
 
@@ -734,18 +735,54 @@
   }
 
   function autoEchoGain() {
-    // Set echoGain so that refRMS matches micRMS
-    // i.e. echoGain_new = echoGain_old * (micRMS / refRMS)
     if (dbgRef <= 0 || dbgMic <= 0) {
       document.getElementById('autoNote').textContent = 'Need audio playing first';
       return;
     }
-    const ratio = Math.sqrt(dbgMic / dbgRef);  // linear ratio to equalise levels
+    // Target: refRMS should equal micRMS * roomAttenuation
+    // We don't know roomAttenuation exactly, so instead we target:
+    // cleanRMS should be minimised, which happens when refRMS = micRMS
+    // But since clean=mic-ref, min clean power ≠ min RMS necessarily.
+    // Best approach: set echoGain so refRMS = micRMS, then fine-tune manually.
+    const ratio = Math.sqrt(dbgMic / dbgRef);
     const newGain = Math.max(0, Math.min(2, echoGain * ratio));
     echoGain = newGain;
-    document.getElementById('echoGainSlider').value = newGain.toFixed(2);
-    document.getElementById('echoGainVal').textContent = newGain.toFixed(2);
+    document.getElementById('echoGainSlider').value = Math.min(2, newGain).toFixed(2);
+    document.getElementById('echoGainVal').textContent = Math.min(2, newGain).toFixed(2);
     document.getElementById('autoNote').textContent = `→ ${newGain.toFixed(3)}`;
+  }
+
+  // Adaptive mode — continuously adjusts echoGain to minimise clean power
+  let adaptiveMode = false;
+  let adaptTimer = null;
+  function toggleAdaptive() {
+    adaptiveMode = !adaptiveMode;
+    const btn = document.getElementById('adaptBtn');
+    if (adaptiveMode) {
+      btn.textContent = '⏹ STOP ADAPT';
+      btn.style.borderColor = 'var(--accent2)';
+      btn.style.color = 'var(--accent2)';
+      adaptTimer = setInterval(() => {
+        if (!running || dbgRef <= 0) return;
+        // Nudge echoGain: if clean > mic*(1-epsilon), increase gain slightly
+        // if clean < mic*(1-epsilon), we have cancellation — hold
+        const cleanRMS = Math.sqrt(dbgClean);
+        const micRMS   = Math.sqrt(dbgMic);
+        const refRMS   = Math.sqrt(dbgRef);
+        if (refRMS > 0) {
+          // Step toward making refRMS = micRMS
+          const err = micRMS - refRMS;
+          echoGain = Math.max(0, Math.min(2, echoGain + err * 0.01));
+          document.getElementById('echoGainSlider').value = echoGain.toFixed(2);
+          document.getElementById('echoGainVal').textContent = echoGain.toFixed(2);
+        }
+      }, 100);
+    } else {
+      btn.textContent = '⟳ ADAPT';
+      btn.style.borderColor = '';
+      btn.style.color = '';
+      if (adaptTimer) { clearInterval(adaptTimer); adaptTimer = null; }
+    }
   }
 
   async function uploadDebugBundle() {
@@ -1076,8 +1113,6 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
           if (!rollingFull && rollingW===0) rollingFull=true;
 
           // 2. What is the speaker playing right now?
-          // refBuf stores out[i]*outGain — the true acoustic output.
-          // latN samples ago is when it was emitted; mic hears it now.
           const refIdx   = (refW - latN + refBufSize * 4) % refBufSize;
           const spkAtMic = refBuf[refIdx] * echoGain;
 
@@ -1088,9 +1123,7 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
           refPow   += spkAtMic * spkAtMic;
           cleanPow += clean * clean;
 
-          // 4. Write ORIGINAL mic (not cleaned) to delay buffer
-          // This ensures the delay buffer always contains real mic audio,
-          // not a version that's had subtraction applied — no circular dependency.
+          // 4. Write original mic to delay buffer (no circular dependency)
           ringBuf[wPos] = micRaw;
           wPos = (wPos + 1) % bufN;
           if (!filled && wPos === 0) filled = true;
@@ -1100,8 +1133,7 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
           rPos = (rPos + 1) % bufN;
           out[i] = outSample;
 
-          // 6. Record what the speaker is actually playing into refBuf
-          // This is the ground truth — no feedback loop possible
+          // 6. Store speaker output in refBuf
           refBuf[refW] = outSample * outGain;
           refW = (refW + 1) % refBufSize;
         }
@@ -1130,7 +1162,7 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v3.9');
+      setStatus('Live — v4.0');
       startDebugTimer();
       drawViz();
 
