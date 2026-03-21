@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v2.1</div>
+    <div style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v2.2</div>
   </header>
 
   <!-- Delay control -->
@@ -403,6 +403,23 @@
     <div class="label" style="margin-top:8px;font-size:9px;color:var(--dim);" id="latencyNote">Estimated speaker→mic travel time. Click Detect to measure.</div>
   </div>
 
+  <!-- Echo gain control -->
+  <div class="panel">
+    <div class="label-row">
+      <span class="label">Echo Cancellation Strength</span>
+      <span><span class="value-display" id="echoGainVal" style="font-size:20px;color:var(--accent2)">0.05</span></span>
+    </div>
+    <input type="range" id="echoGainSlider" min="0" max="1" step="0.01" value="0.05">
+    <div class="ticks">
+      <span class="tick">0</span>
+      <span class="tick">0.25</span>
+      <span class="tick">0.5</span>
+      <span class="tick">0.75</span>
+      <span class="tick">1.0</span>
+    </div>
+    <div class="label" style="margin-top:8px;font-size:9px;color:var(--dim);">Increase until echo stops. If clean > mic, reduce it.</div>
+  </div>
+
   <!-- Visualizer -->
   <div class="viz-panel">
     <div class="label" style="margin-bottom:10px;">Input Level</div>
@@ -475,7 +492,7 @@
   let rollingBuf = null, rollingSize = 0, rollingW = 0, rollingFull = false;
 
   // Debug metrics — written by audio callback, read by UI timer
-  let dbgMic = 0, dbgRef = 0, dbgClean = 0, dbgSpkGain = 1, dbgSR = 0;
+  let dbgMic = 0, dbgRef = 0, dbgClean = 0, dbgSpkGain = 1, dbgSR = 0, dbgEchoGain = 0;
 
   // ── DOM refs ───────────────────────────────────────────────────────────────
   const delaySlider   = document.getElementById('delaySlider');
@@ -520,6 +537,12 @@
     fill(inGainSlider, ((v-1)/(20-1))*100);
     if (inGainNode) inGainNode.gain.setTargetAtTime(v, audioCtx.currentTime, 0.05);
   });
+  document.getElementById('echoGainSlider').addEventListener('input', () => {
+    const v = parseFloat(document.getElementById('echoGainSlider').value);
+    document.getElementById('echoGainVal').textContent = v.toFixed(2);
+    echoGain = v;
+  });
+
   latencySlider.addEventListener('input', () => {
     const v = parseInt(latencySlider.value);
     latencyVal.textContent = v;
@@ -607,7 +630,7 @@
     debugTimer = setInterval(() => {
       const db = v => v>0 ? (20*Math.log10(Math.sqrt(v))).toFixed(1)+'dB' : '-inf';
       document.getElementById('debugInfo').innerHTML =
-        `sr:${dbgSR} &nbsp; latN:${latN} &nbsp; spkGain:${dbgSpkGain.toFixed(2)}<br>` +
+        `sr:${dbgSR} &nbsp; latN:${latN} &nbsp; spkGain:${dbgSpkGain.toFixed(2)} &nbsp; echoGain:${dbgEchoGain.toFixed(3)}<br>` +
         `mic:${db(dbgMic)} &nbsp; ref:${db(dbgRef)} &nbsp; clean:${db(dbgClean)}`;
     }, 250);
   }
@@ -712,7 +735,8 @@
           // 2. Look up what speaker output was latN samples ago (stored pre-outGain)
           const refIdx = (refW - latN + refBufSize*4) % refBufSize;
           // Multiply by outGain to get acoustic level, then echoGain for room attenuation
-          const spkAtMic = refBuf[refIdx] * outGain * echoGain;
+          // echoGain = measured room attenuation (0.36 = -8.8dB). No gain scaling needed.
+          const spkAtMic = refBuf[refIdx] * echoGain;
 
           // 3. Subtract from mic (both now in true mic domain)
           const clean = micRaw - spkAtMic;
@@ -739,6 +763,7 @@
         // Update debug vars (read by UI timer)
         const n = inp.length;
         dbgMic=micPow/n; dbgRef=refPow/n; dbgClean=cleanPow/n; dbgSpkGain=outGain*inGain;
+        dbgEchoGain=echoGain;
 
         // Buffer progress
         if (filled) {
@@ -760,7 +785,7 @@
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v2.1');
+      setStatus('Live — v2.2');
       startDebugTimer();
       drawViz();
 
