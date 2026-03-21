@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v2.7</div>
+    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v2.8</div>
   </header>
 
   <!-- Delay control -->
@@ -504,7 +504,7 @@
   let ringBuf = null, wPos = 0, rPos = 0, filled = false, bufN = 0;
 
   // AEC reference buffer — stores raw output so we can subtract it from mic
-  let refBuf = null, refBufSize = 0, refW = 0, latN = 0;
+  let refBuf = null, refBufSize = 0, refW = 0, latN = 0, refReady = false, refSamplesWritten = 0;
   let echoGain = 0.36;
 
   // Rolling capture — always keeps last 10s of raw mic
@@ -671,7 +671,7 @@
 
       const bundle = {
         timestamp: new Date().toISOString(),
-        version:   '2.3',
+        version:   document.querySelector('.title') ? '2.8' : '2.8',
         settings: {
           delayS:       parseFloat(delaySlider.value),
           outputVolPct: parseInt(volumeSlider.value),
@@ -951,7 +951,7 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
 
       refBufSize  = Math.max(Math.floor(sr*0.6), 32768);
       refBuf      = new Float32Array(refBufSize);
-      refW=0;
+      refW=0; refReady=false; refSamplesWritten=0;
 
       rollingSize = Math.floor(10*sr);
       rollingBuf  = new Float32Array(rollingSize);
@@ -983,8 +983,13 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
           rollingW = (rollingW+1)%rollingSize;
           if (!rollingFull && rollingW===0) rollingFull=true;
 
-          // 2. Look up what speaker output was latN samples ago (stored pre-outGain)
-          const refIdx = (refW - latN + refBufSize*4) % refBufSize;
+          // 2. Only subtract once we have latN samples in the buffer
+          let spkAtMic = 0;
+          if (refReady) {
+            const refIdx = (refW - latN + refBufSize*4) % refBufSize;
+            spkAtMic = refBuf[refIdx] * echoGain;
+          }
+          // dummy line to keep structure
           // Multiply by outGain to get acoustic level, then echoGain for room attenuation
           // echoGain = measured room attenuation (0.36 = -8.8dB). No gain scaling needed.
           const spkAtMic = refBuf[refIdx] * echoGain;
@@ -1006,15 +1011,15 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
           rPos = (rPos+1)%bufN;
           out[i] = outSample;
 
-          // 6. Store true acoustic output in ref buffer (what the speaker actually emits)
-          // outSample is pre-outGain, so multiply by outGain to get acoustic level
+          // 6. Store true acoustic output in ref buffer
           refBuf[refW] = outSample * outGain;
           refW = (refW+1)%refBufSize;
+          if (!refReady) { refSamplesWritten++; if (refSamplesWritten > latN) refReady = true; }
         }
 
         // Update debug vars (read by UI timer)
         const n = inp.length;
-        dbgMic=micPow/n; dbgRef=refPow/n; dbgClean=cleanPow/n; dbgSpkGain=outGain*inGain;
+        dbgMic=micPow/n; dbgRef=refReady ? refPow/n : 0; dbgClean=cleanPow/n; dbgSpkGain=outGain*inGain;
 
         // Buffer progress
         if (filled) {
@@ -1036,7 +1041,7 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v2.7');
+      setStatus('Live — v2.8');
       startDebugTimer();
       drawViz();
 
