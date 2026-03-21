@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v5.9</div>
+    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v6.1</div>
   </header>
 
   <!-- Delay control -->
@@ -401,6 +401,11 @@
       <option value="">Default mic</option>
     </select>
     <div style="font-size:9px;color:var(--dim);margin-top:6px;" id="micNote">Tap Refresh to list available microphones.</div>
+    <div style="margin-top:8px;display:flex;align-items:center;gap:10px;">
+      <label style="font-size:10px;letter-spacing:0.15em;color:var(--dim);">HARDWARE AEC</label>
+      <button id="hwAecBtn" onclick="toggleHwAec()" style="font-family:'Share Tech Mono',monospace;font-size:10px;letter-spacing:0.15em;background:transparent;border:1px solid var(--dim);color:var(--dim);padding:4px 10px;border-radius:2px;cursor:pointer;">OFF</button>
+      <span style="font-size:9px;color:var(--dim);">Use phone's built-in AEC (3 mics)</span>
+    </div>
   </div>
 
   <!-- Speaker latency control -->
@@ -450,7 +455,7 @@
 
   <!-- Save last button -->
   <button class="btn" id="saveBtn" onclick="saveLast()" style="margin-top:10px;border-color:var(--warn);color:var(--warn);">⚡ SAVE LAST 10s</button>
-  <button class="btn" id="notchBtn" onclick="notchActive=!notchActive;if(!notchActive)clearNotches();document.getElementById('notchBtn').textContent=notchActive?'🎚 NOTCH FILTER ON':'🎚 NOTCH FILTER OFF';" style="margin-top:8px;">🎚 NOTCH FILTER ON</button>
+
   <button class="btn" id="threshBtn" onclick="detectFeedbackThreshold()" style="margin-top:8px;border-color:#44aaff;color:#44aaff;">🔧 AUTO SETUP (latency + safe volume)</button>
   <div style="margin-top:4px;font-size:11px;color:#44aaff;padding:2px;" id="threshNote">Measures latency and finds safe volume automatically. ~20s. Keep quiet.</div>
   <button class="btn" id="debugUploadBtn" onclick="uploadDebugBundle()" style="margin-top:8px;border-color:#44aaff;color:#44aaff;">📡 UPLOAD DEBUG REPORT</button>
@@ -483,193 +488,14 @@
 </div>
 
 <script>
-  // ── State ──────────────────────────────────────────────────────────────────
-  let audioCtx=null, sourceNode=null, inGainNode=null, outGainNode=null;
-  let procNode=null, analyser=null, stream=null, running=false;
-
-  let ringBuf=null, wPos=0, rPos=0, filled=false, bufN=0;
-  let refBuf=null, refBufSize=0, refW=0, latN=0;
-  let echoGain=0.36; // kept for display/compat
-
-  // NLMS AEC — multi-tap filter, adapts to room acoustics automatically
-  const NLMS_TAPS = 256;    // covers ~5ms of uncertainty around latN
-  const NLMS_MU   = 0.05;   // step size — fast enough but stable
-  const NLMS_EPS  = 1e-6;
-  let   nlmsW     = null;   // filter weights
-  let rollingBuf=null, rollingSize=0, rollingW=0, rollingFull=false;
-  let dbgMic=0, dbgRef=0, dbgClean=0, dbgSpkGain=1, dbgSR=0;
-  let baseVolume=0.8;
-
-  // ── Multi-notch filter ─────────────────────────────────────────────────────
-  // Up to 4 simultaneous notch filters for multiple feedback frequencies
-  let notchActive = true;
-  const MAX_NOTCHES = 4;
-  const NOTCH_Q = 4; // wider notch = more cut
-  let notches = []; // array of {freq, b0,b1,b2,a1,a2, x1,x2,y1,y2, strength}
-
-  function makeNotch(freq, sr) {
-    if (freq <= 20 || freq >= sr/2 - 100) return null;
-    const w0    = 2*Math.PI*freq/sr;
-    const cos   = Math.cos(w0);
-    const alpha = Math.sin(w0)/(2*NOTCH_Q);
-    const a0    = 1+alpha;
-    return {
-      freq,
-      b0:  1/a0,  b1: -2*cos/a0, b2:  1/a0,
-      a1: -2*cos/a0,              a2: (1-alpha)/a0,
-      x1:0, x2:0, y1:0, y2:0,
-      strength: 0  // how strong this feedback is (0-1)
-    };
-  }
-
-  function applyNotches(x) {
-    let y = x;
-    for (const n of notches) {
-      const out = n.b0*y + n.b1*n.x1 + n.b2*n.x2 - n.a1*n.y1 - n.a2*n.y2;
-      n.x2=n.x1; n.x1=y; n.y2=n.y1; n.y1=out;
-      y = out;
-    }
-    return y;
-  }
-
-  function clearNotches() {
-    notches = [];
-    document.getElementById('notchNote').textContent = 'notch: cleared';
-  }
-
-  // Buffer flush cooldown — prevent rapid re-triggering
-  let lastFlushTime = 0;
-  const FLUSH_COOLDOWN_MS = 2000;
-
-  // Slow adaptive echoGain — nudges up/down based on signal growth
-  let adaptEchoTimer = null;
-  let prevAdaptRMS = 0;
-
-  function startAdaptEcho() {
-    adaptEchoTimer = setInterval(() => {
-      if (!running || dbgMic <= 0) return;
-      const curRMS = Math.sqrt(dbgMic);
-      if (prevAdaptRMS > 0.005) { // only adapt when there's actual signal
-        const growth = curRMS / prevAdaptRMS;
-        if (growth > 1.05) {
-          // Signal growing — increase echoGain slightly to cancel more
-          echoGain = Math.min(2.0, echoGain * 1.05);
-          echoSlider.value = echoGain.toFixed(2);
-          echoVal.textContent = echoGain.toFixed(2);
-        } else if (growth < 0.95 && echoGain > 0.1) {
-          // Signal shrinking — we may be over-cancelling, nudge back slightly
-          echoGain = Math.max(0.05, echoGain * 0.99);
-          echoSlider.value = echoGain.toFixed(2);
-          echoVal.textContent = echoGain.toFixed(2);
-        }
-      }
-      prevAdaptRMS = curRMS * 0.3 + prevAdaptRMS * 0.7; // slow tracker
-    }, 1000);
-  }
-  function stopAdaptEcho() {
-    if (adaptEchoTimer){clearInterval(adaptEchoTimer);adaptEchoTimer=null;}
-    prevAdaptRMS=0;
-  }
-
-  // Time-series metrics for debug report (last 5s, sampled every 250ms)
-  const TS_SAMPLES = 20;
-  let tsHistory = [];
-  let tsTimer = null;
-
-  function startTsHistory() {
-    tsTimer = setInterval(() => {
-      if (!running) return;
-      const db = v => v>0?(20*Math.log10(Math.sqrt(v))).toFixed(1):'-inf';
-      tsHistory.push({
-        t: Date.now(),
-        mic: db(dbgMic), ref: db(dbgRef), clean: db(dbgClean),
-        notches: notches.length, vol: (baseVolume*100).toFixed(0)
-      });
-      if (tsHistory.length > TS_SAMPLES) tsHistory.shift();
-    }, 250);
-  }
-  function stopTsHistory() {
-    if (tsTimer){clearInterval(tsTimer);tsTimer=null;}
-    tsHistory=[];
-  }
-
-  // FFT feedback detector — runs every 100ms
-  // Uses a circular buffer of recent output, finds dominant frequencies
-  let fftTimer=null;
-
-  // Feedback detector using Web Audio AnalyserNode (hardware-accelerated FFT)
-  // Much lighter than Goertzel on mobile
-  let feedbackAnalyser = null;
-  let feedbackDetectTimer = null;
-  // Track how many consecutive detections at same frequency (require sustained = real feedback)
-  let freqHitCount = {};
-
-  function startFftDetector(sr) {
-    stopFftDetector();
-    // feedbackAnalyser is connected in start() to the output
-    feedbackDetectTimer = setInterval(() => {
-      if (!feedbackAnalyser || !notchActive || !running) return;
-
-      const binCount = feedbackAnalyser.frequencyBinCount; // FFT_SIZE/2
-      const data = new Uint8Array(binCount);
-      feedbackAnalyser.getByteFrequencyData(data);
-
-      // Find total power and peak bin in 80-8000Hz range
-      const minBin = Math.floor(80  / (sr/2) * binCount);
-      const maxBin = Math.floor(8000/ (sr/2) * binCount);
-      let total=0, peakVal=0, peakBin=0;
-
-      for (let i=minBin; i<maxBin; i++) {
-        total += data[i];
-        if (data[i] > peakVal) { peakVal=data[i]; peakBin=i; }
-      }
-
-      if (total < 100 || peakVal < 20) {
-        freqHitCount = {};
-        notches = [];
-        document.getElementById('notchNote').textContent = 'notch: quiet';
-        return;
-      }
-
-      const peakRatio = peakVal / (total / (maxBin-minBin)); // ratio vs average
-      const peakFreq  = peakBin * (sr/2) / binCount;
-      const freqKey   = Math.round(peakFreq/50)*50; // bucket to nearest 50Hz
-
-      // Only act if same frequency detected 3+ times in a row (~750ms sustained)
-      freqHitCount[freqKey] = (freqHitCount[freqKey]||0) + 1;
-      // Decay other counts
-      for (const k in freqHitCount) {
-        if (k != freqKey) freqHitCount[k] = Math.max(0, freqHitCount[k]-1);
-      }
-
-      if (peakRatio > 3.0 && freqHitCount[freqKey] >= 3) {
-        // Sustained dominant frequency = feedback
-        const existing = notches.find(n=>Math.abs(n.freq-peakFreq)<100);
-        if (!existing) {
-          const n = makeNotch(peakFreq, sr);
-          if (n) { n.strength=peakRatio; notches.push(n); }
-          // Add 2nd harmonic
-          const n2 = makeNotch(peakFreq*2, sr);
-          if (n2) { n2.strength=peakRatio*0.5; notches.push(n2); }
-          notches = notches.slice(0, MAX_NOTCHES);
-        }
-        document.getElementById('notchNote').textContent =
-          `notch: ${peakFreq.toFixed(0)}Hz (${peakRatio.toFixed(1)}x avg, ${freqHitCount[freqKey]} hits)`;
-      } else if (peakRatio < 2.0) {
-        // No dominant peak — clear old notches gradually
-        notches = notches.filter(n => {
-          const k = Math.round(n.freq/50)*50;
-          return (freqHitCount[k]||0) > 1;
-        });
-        if (notches.length===0) document.getElementById('notchNote').textContent='notch: ok';
-      }
-    }, 250); // 250ms — lighter polling
-  }
-
-  function stopFftDetector() {
-    if (feedbackDetectTimer){clearInterval(feedbackDetectTimer);feedbackDetectTimer=null;}
-    freqHitCount={};
-  }
+  let audioCtx=null,sourceNode=null,inGainNode=null,outGainNode=null;
+  let procNode=null,analyser=null,stream=null,running=false;
+  let ringBuf=null,wPos=0,rPos=0,filled=false,bufN=0;
+  let rollingBuf=null,rollingSize=0,rollingW=0,rollingFull=false;
+  let dbgMic=0,dbgRef=0,dbgClean=0,dbgSpkGain=1,dbgSR=0;
+  let baseVolume=0.5;
+  let tsHistory=[], tsTimer=null;
+  const TS_SAMPLES=20;
 
   // ── DOM ────────────────────────────────────────────────────────────────────
   const delaySlider  = document.getElementById('delaySlider');
@@ -693,14 +519,12 @@
   const ctx2d        = canvas.getContext('2d');
 
   function fill(s,pct){s.style.setProperty('--fill',Math.max(0,Math.min(100,pct))+'%');}
-
   function syncSliders(){
     delayVal.textContent  = parseFloat(delaySlider.value).toFixed(1);
     volVal.textContent    = volumeSlider.value;
     inGainVal.textContent = parseFloat(inGainSlider.value).toFixed(1);
     latencyVal.textContent= latencySlider.value;
     echoVal.textContent   = parseFloat(echoSlider.value).toFixed(2);
-    echoGain = parseFloat(echoSlider.value);
     fill(delaySlider,  ((parseFloat(delaySlider.value)-0.1)/(10-0.1))*100);
     fill(volumeSlider, parseInt(volumeSlider.value));
     fill(inGainSlider, ((parseFloat(inGainSlider.value)-1)/(20-1))*100);
@@ -729,18 +553,25 @@
     latencyVal.textContent=v;
     fill(latencySlider,((v-5)/(400-5))*100);
     latencyNote.textContent='Manually set.';
-    if(audioCtx) latN=Math.floor(v/1000*audioCtx.sampleRate);
   });
   echoSlider.addEventListener('input',()=>{
-    echoGain=parseFloat(echoSlider.value);
-    echoVal.textContent=echoGain.toFixed(2);
+    echoVal.textContent=parseFloat(echoSlider.value).toFixed(2);
   });
 
   // ── Mic ────────────────────────────────────────────────────────────────────
+  let hwAecEnabled = false;
+  function toggleHwAec() {
+    hwAecEnabled = !hwAecEnabled;
+    const btn = document.getElementById('hwAecBtn');
+    btn.textContent = hwAecEnabled ? 'ON' : 'OFF';
+    btn.style.borderColor = hwAecEnabled ? 'var(--accent)' : 'var(--dim)';
+    btn.style.color = hwAecEnabled ? 'var(--accent)' : 'var(--dim)';
+  }
+
   function getMicConstraints(){
-    const deviceId=document.getElementById('micSelect')?.value;
-    const base={echoCancellation:false,noiseSuppression:false,autoGainControl:false};
-    return deviceId?{...base,deviceId:{exact:deviceId}}:{...base,facingMode:{ideal:'environment'}};
+    const d=document.getElementById('micSelect')?.value;
+    const b={echoCancellation:hwAecEnabled,noiseSuppression:hwAecEnabled,autoGainControl:hwAecEnabled};
+    return d?{...b,deviceId:{exact:d}}:{...b,facingMode:{ideal:'environment'}};
   }
   async function refreshMics(){
     try{
@@ -754,17 +585,15 @@
     }catch(e){document.getElementById('micNote').textContent='Error: '+e.message;}
   }
 
-  // ── Chirp latency detection ────────────────────────────────────────────────
+  // ── Chirp latency ──────────────────────────────────────────────────────────
   async function chirpDetect(ctx,micStream){
     const sr=ctx.sampleRate;
-    const chirpN=Math.floor(40/1000*sr), listenN=Math.floor(500/1000*sr);
-    const cb=ctx.createBuffer(1,chirpN,sr); const cd=cb.getChannelData(0);
+    const chirpN=Math.floor(40/1000*sr),listenN=Math.floor(500/1000*sr);
+    const cb=ctx.createBuffer(1,chirpN,sr);const cd=cb.getChannelData(0);
     for(let i=0;i<chirpN;i++){const e=0.5-0.5*Math.cos(2*Math.PI*i/chirpN);cd[i]=e*Math.sin(2*Math.PI*15000*i/sr);}
-    const rec=new Float32Array(listenN); let rp=0;
-    const ms=ctx.createMediaStreamSource(micStream);
-    const sp=ctx.createScriptProcessor(512,1,1);
-    const sg=ctx.createGain(); sg.gain.value=0;
-    ms.connect(sp);sp.connect(sg);sg.connect(ctx.destination);
+    const rec=new Float32Array(listenN);let rp=0;
+    const ms=ctx.createMediaStreamSource(micStream),sp=ctx.createScriptProcessor(512,1,1),sg=ctx.createGain();
+    sg.gain.value=0;ms.connect(sp);sp.connect(sg);sg.connect(ctx.destination);
     sp.onaudioprocess=ev=>{const d=ev.inputBuffer.getChannelData(0);for(let i=0;i<d.length&&rp<listenN;i++)rec[rp++]=d[i];};
     const cs=ctx.createBufferSource(),cg=ctx.createGain();cg.gain.value=0.9;
     cs.buffer=cb;cs.connect(cg);cg.connect(ctx.destination);cs.start();
@@ -805,11 +634,11 @@
   async function detectFeedbackThreshold(){
     if(running){alert('Stop first');return;}
     const btn=document.getElementById('threshBtn');
-    btn.textContent='⟳ TESTING...'; btn.disabled=true;
+    btn.textContent='⟳ TESTING...';btn.disabled=true;
     setStatus('Auto setup...');
     try{
       const ds=await navigator.mediaDevices.getUserMedia({audio:getMicConstraints(),video:false});
-      const dc=new AudioContext(); const sr=dc.sampleRate;
+      const dc=new AudioContext();const sr=dc.sampleRate;
       const inG=parseFloat(inGainSlider.value);
       setStatus('Step 1: Measuring latency...');
       const latRes=await chirpDetect(dc,ds);
@@ -818,25 +647,23 @@
         latencySlider.value=c;latencyVal.textContent=c;
         fill(latencySlider,((c-5)/(400-5))*100);
         latencyNote.textContent=`✓ ${c}ms`;
-        latN=latRes.samples;
       }
-      setStatus('Step 2: Finding feedback threshold...');
+      setStatus('Step 2: Finding safe volume...');
       const testBufN=Math.floor(parseFloat(delaySlider.value)*sr);
-      const testRing=new Float32Array(testBufN);
+      const testRing=new Float32Array(Math.max(testBufN,1));
       let tw=0,tr=0,tf=false;
-      const testRef=new Float32Array(Math.max(latN*4,32768)); let trW=0;
       const micSrc=dc.createMediaStreamSource(ds);
-      const iGain=dc.createGain(); iGain.gain.value=inG;
-      const oGain=dc.createGain(); oGain.gain.value=0;
+      const iGain=dc.createGain();iGain.gain.value=inG;
+      const oGain=dc.createGain();oGain.gain.value=0;
       const proc=dc.createScriptProcessor(4096,1,1);
-      const winN=sr; let rmsBuf=new Float32Array(winN); let rmsP=0;
+      const winN=sr;let rmsBuf=new Float32Array(winN);let rmsP=0;
       proc.onaudioprocess=e=>{
         const inp=e.inputBuffer.getChannelData(0),out=e.outputBuffer.getChannelData(0);
         for(let i=0;i<inp.length;i++){
           const m=inp[i]/inG;
-          testRing[tw]=m; tw=(tw+1)%testBufN; if(!tf&&tw===0)tf=true;
-          const o=tf?testRing[tr]:0; tr=(tr+1)%testBufN; out[i]=o;
-          rmsBuf[rmsP%winN]=m*m; rmsP++;
+          testRing[tw]=m;tw=(tw+1)%testBufN;if(!tf&&tw===0)tf=true;
+          out[i]=tf?testRing[tr]:0;tr=(tr+1)%testBufN;
+          rmsBuf[rmsP%winN]=m*m;rmsP++;
         }
       };
       micSrc.connect(iGain);iGain.connect(proc);proc.connect(oGain);oGain.connect(dc.destination);
@@ -854,32 +681,34 @@
       await new Promise(r=>setTimeout(r,300));
       proc.disconnect();micSrc.disconnect();ds.getTracks().forEach(t=>t.stop());dc.close();
       const safePct=Math.max(35,Math.round(thresholdPct*0.8));
-      volumeSlider.value=safePct; volVal.textContent=safePct;
-      fill(volumeSlider,safePct); baseVolume=safePct/100;
+      volumeSlider.value=safePct;volVal.textContent=safePct;
+      fill(volumeSlider,safePct);baseVolume=safePct/100;
       setStatus(`Done! Threshold=${thresholdPct}%, safe vol=${safePct}%`);
       document.getElementById('threshNote').textContent=`thresh:${thresholdPct}% → vol:${safePct}%`;
     }catch(err){setStatus('Setup failed: '+err.message);console.error(err);}
-    btn.textContent='🔧 AUTO SETUP'; btn.disabled=false;
+    btn.textContent='🔧 AUTO SETUP';btn.disabled=false;
   }
 
-  // ── Debug timer ────────────────────────────────────────────────────────────
+  // ── Debug ──────────────────────────────────────────────────────────────────
   let debugTimer=null;
   function startDebugTimer(){
     stopDebugTimer();
     debugTimer=setInterval(()=>{
       const db=v=>v>0?(20*Math.log10(Math.sqrt(v))).toFixed(1)+'dB':'-inf';
       document.getElementById('debugInfo').innerHTML=
-        `sr:${dbgSR} &nbsp; latN:${latN} &nbsp; nlms:${nlmsW?Math.sqrt(nlmsW.reduce((s,w)=>s+w*w,0)).toFixed(4):'—'} &nbsp; notches:${notches.length}<br>`+
-        `mic:${db(dbgMic)} &nbsp; ref:${db(dbgRef)} &nbsp; clean:${db(dbgClean)} &nbsp; vol:${(baseVolume*100).toFixed(0)}%`;
+        `sr:${dbgSR} &nbsp; vol:${(baseVolume*100).toFixed(0)}%<br>`+
+        `mic:${db(dbgMic)} &nbsp; clean:${db(dbgClean)}`;
+      // ts history
+      tsHistory.push({t:Date.now(),mic:db(dbgMic),clean:db(dbgClean),vol:(baseVolume*100).toFixed(0)});
+      if(tsHistory.length>TS_SAMPLES)tsHistory.shift();
     },250);
   }
   function stopDebugTimer(){if(debugTimer){clearInterval(debugTimer);debugTimer=null;}document.getElementById('debugInfo').textContent='—';}
 
-  // ── Save / Upload ──────────────────────────────────────────────────────────
+  // ── Save ───────────────────────────────────────────────────────────────────
   function saveLast(){
-    if(!rollingBuf||(!rollingFull&&rollingW===0)) return;
-    const sr=audioCtx?.sampleRate||48000;
-    const size=rollingFull?rollingSize:rollingW;
+    if(!rollingBuf||(!rollingFull&&rollingW===0))return;
+    const sr=audioCtx?.sampleRate||48000,size=rollingFull?rollingSize:rollingW;
     const out=new Float32Array(size);
     if(rollingFull){out.set(rollingBuf.slice(rollingW));out.set(rollingBuf.slice(0,rollingW),rollingSize-rollingW);}
     else out.set(rollingBuf.slice(0,rollingW));
@@ -888,66 +717,45 @@
     encodeAndDownload(out,sr,'last-10s.wav');
     document.getElementById('saveStatus').textContent=`✓ Saved ${(size/sr).toFixed(1)}s`;
   }
-
   function encodeAndDownload(samples,sr,filename){
-    const buf=new ArrayBuffer(44+samples.length*2);
-    const v=new DataView(buf);
+    const buf=new ArrayBuffer(44+samples.length*2);const v=new DataView(buf);
     const ws=(o,s)=>{for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i));};
-    ws(0,'RIFF');v.setUint32(4,36+samples.length*2,true);
-    ws(8,'WAVE');ws(12,'fmt ');v.setUint32(16,16,true);
-    v.setUint16(20,1,true);v.setUint16(22,1,true);
-    v.setUint32(24,sr,true);v.setUint32(28,sr*2,true);
-    v.setUint16(32,2,true);v.setUint16(34,16,true);
+    ws(0,'RIFF');v.setUint32(4,36+samples.length*2,true);ws(8,'WAVE');ws(12,'fmt ');
+    v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);
+    v.setUint32(24,sr,true);v.setUint32(28,sr*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);
     ws(36,'data');v.setUint32(40,samples.length*2,true);
     for(let i=0;i<samples.length;i++){const s=Math.max(-1,Math.min(1,samples[i]));v.setInt16(44+i*2,s<0?s*0x8000:s*0x7FFF,true);}
-    const a=document.createElement('a');
-    a.href=URL.createObjectURL(new Blob([buf],{type:'audio/wav'}));
-    a.download=filename;a.click();
+    const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([buf],{type:'audio/wav'}));a.download=filename;a.click();
   }
 
   async function uploadDebugBundle(){
     const btn=document.getElementById('debugUploadBtn');
     const result=document.getElementById('uploadResult');
-    result.style.display='block'; result.textContent='Building...'; btn.disabled=true;
+    result.style.display='block';result.textContent='Building...';btn.disabled=true;
     try{
       const db=v=>v>0?(20*Math.log10(Math.sqrt(v))).toFixed(1)+'dB':'-inf';
       const bundle={
         timestamp:new Date().toISOString(),
-        version:document.querySelector('[style*="background:var(--accent)"]')?.textContent?.trim()||'v5.2',
-        settings:{delayS:parseFloat(delaySlider.value),outputVolPct:parseInt(volumeSlider.value),inputGainX:parseFloat(inGainSlider.value),latencyMs:parseInt(latencySlider.value),echoGain,sampleRate:audioCtx?.sampleRate||48000,latNSamples:latN},
-        metrics:{micRMS:db(dbgMic),refRMS:db(dbgRef),cleanRMS:db(dbgClean),spkGain:dbgSpkGain.toFixed(3),refEmpty:dbgRef===0,aecWorking:dbgRef>0&&dbgClean<dbgMic*0.5},
-        notches:notches.map(n=>({freq:n.freq,strength:(n.strength*100).toFixed(0)+'%'})),
-        audio:(()=>{
-          if(!rollingBuf||(!rollingFull&&rollingW===0))return{note:'no audio captured'};
-          const sr=audioCtx?.sampleRate||48000,size=rollingFull?rollingSize:rollingW;
-          const out=new Float32Array(size);
-          if(rollingFull){out.set(rollingBuf.slice(rollingW));out.set(rollingBuf.slice(0,rollingW),rollingSize-rollingW);}
-          else out.set(rollingBuf.slice(0,rollingW));
-          const gain=inGainNode?.gain.value||1;
-          let peak=0,rms=0;
-          for(let i=0;i<out.length;i++){out[i]=Math.max(-1,Math.min(1,out[i]*gain));if(Math.abs(out[i])>peak)peak=Math.abs(out[i]);rms+=out[i]*out[i];}
-          rms=Math.sqrt(rms/out.length);
-          return{durationS:(size/sr).toFixed(1),peakDb:peak>0?(20*Math.log10(peak)).toFixed(1)+'dB':'-inf',rmsDb:rms>0?(20*Math.log10(rms)).toFixed(1)+'dB':'-inf'};
-        })(),
-        diagnosis:dbgRef===0?'REF EMPTY':dbgClean<dbgMic*0.5?'AEC WORKING':'Not cancelling enough',
-        timeSeries: [...tsHistory].map(s=>({
-          mic:s.mic, ref:s.ref, clean:s.clean,
-          notches:s.notches, vol:s.vol+'%'
-        }))
+        version:document.querySelector('[style*="background:var(--accent)"]')?.textContent?.trim()||'v6.0',
+        settings:{delayS:parseFloat(delaySlider.value),outputVolPct:parseInt(volumeSlider.value),
+          inputGainX:parseFloat(inGainSlider.value),latencyMs:parseInt(latencySlider.value),
+          sampleRate:audioCtx?.sampleRate||48000},
+        metrics:{micRMS:db(dbgMic),cleanRMS:db(dbgClean),spkGain:dbgSpkGain.toFixed(3)},
+        timeSeries:[...tsHistory]
       };
       const json=JSON.stringify(bundle,null,2);
       const blob=new Blob([json],{type:'application/json'});
       result.textContent='Uploading...';
       let url=null;
-      try{const fd=new FormData();fd.append('file',blob,'echo-debug.json');const r=await fetch('https://0x0.st',{method:'POST',body:fd});if(r.ok)url=(await r.text()).trim();}catch(e){console.warn(e);}
-      if(!url){try{const r=await fetch('https://transfer.sh/echo-debug.json',{method:'PUT',body:blob,headers:{'Max-Days':'1'}});if(r.ok)url=(await r.text()).trim();}catch(e){console.warn(e);}}
-      if(url){result.innerHTML=`\u2713 Done!<br><br><strong style="font-size:17px;">${url}</strong><br><br>Paste into Claude chat.`;}
-      else{result.innerHTML=`Upload failed.<br><textarea style="width:100%;height:120px;background:#0a0a0a;color:#44aaff;border:1px solid #333;font-size:10px;padding:6px;" readonly>${json}</textarea>`;}
+      try{const fd=new FormData();fd.append('file',blob,'echo-debug.json');const r=await fetch('https://0x0.st',{method:'POST',body:fd});if(r.ok)url=(await r.text()).trim();}catch(e){}
+      if(!url){try{const r=await fetch('https://transfer.sh/echo-debug.json',{method:'PUT',body:blob,headers:{'Max-Days':'1'}});if(r.ok)url=(await r.text()).trim();}catch(e){}}
+      if(url){result.innerHTML=`\u2713<br><br><strong style="font-size:17px;">${url}</strong><br><br>Paste into Claude chat.`;}
+      else{result.innerHTML=`<textarea style="width:100%;height:120px;background:#0a0a0a;color:#44aaff;border:1px solid #333;font-size:10px;padding:6px;" readonly>${json}</textarea>`;}
     }catch(err){result.textContent='Error: '+err.message;}
     btn.disabled=false;
   }
 
-  // ── Main audio engine ──────────────────────────────────────────────────────
+  // ── Main engine ────────────────────────────────────────────────────────────
   async function toggle(){if(!running)await start();else stop();}
 
   async function start(){
@@ -959,32 +767,24 @@
       const delaySec=parseFloat(delaySlider.value);
       const vol=parseInt(volumeSlider.value)/100;
       const inGain=parseFloat(inGainSlider.value);
-      latN=Math.floor(parseInt(latencySlider.value)/1000*sr);
-      echoGain=parseFloat(echoSlider.value);
-      baseVolume=vol;
+      baseVolume=vol; dbgSR=sr;
 
       bufN=Math.floor(delaySec*sr);
-      ringBuf=new Float32Array(bufN); wPos=0;rPos=0;filled=false;
-      refBufSize=Math.max((latN+NLMS_TAPS)*4,32768);
-      refBuf=new Float32Array(refBufSize); refW=0;
-      nlmsW=new Float32Array(NLMS_TAPS); // init to zero — NLMS adapts from scratch
+      ringBuf=new Float32Array(bufN);wPos=0;rPos=0;filled=false;
       rollingSize=Math.floor(10*sr);
-      rollingBuf=new Float32Array(rollingSize); rollingW=0;rollingFull=false;
-      notches=[];
-      dbgSR=sr;
+      rollingBuf=new Float32Array(rollingSize);rollingW=0;rollingFull=false;
 
       sourceNode=audioCtx.createMediaStreamSource(stream);
-      analyser=audioCtx.createAnalyser(); analyser.fftSize=256;
-      inGainNode=audioCtx.createGain(); inGainNode.gain.value=inGain;
-      outGainNode=audioCtx.createGain(); outGainNode.gain.value=vol;
+      analyser=audioCtx.createAnalyser();analyser.fftSize=256;
+      inGainNode=audioCtx.createGain();inGainNode.gain.value=inGain;
+      outGainNode=audioCtx.createGain();outGainNode.gain.value=vol;
 
       procNode=audioCtx.createScriptProcessor(4096,1,1);
       procNode.onaudioprocess=e=>{
         const inp=e.inputBuffer.getChannelData(0);
         const out=e.outputBuffer.getChannelData(0);
-        const oGain=outGainNode.gain.value;
         const iGain=inGainNode.gain.value;
-        let micPow=0,refPow=0,cleanPow=0;
+        let micPow=0,cleanPow=0;
 
         for(let i=0;i<inp.length;i++){
           const micRaw=inp[i]/iGain;
@@ -994,85 +794,44 @@
           rollingW=(rollingW+1)%rollingSize;
           if(!rollingFull&&rollingW===0)rollingFull=true;
 
-          // NLMS runs on a SHADOW path — learns the echo but doesn't affect output
-          // This separates the AEC learning from the delay playback completely
-          let echoEst=0, xPow=0;
-          for(let t=0;t<NLMS_TAPS;t++){
-            const idx=(refW-latN-t+refBufSize*4)%refBufSize;
-            const x=refBuf[idx];
-            echoEst+=nlmsW[t]*x;
-            xPow+=x*x;
-          }
-          const err=micRaw-echoEst;
-          const norm=NLMS_MU/(xPow+NLMS_EPS);
-          for(let t=0;t<NLMS_TAPS;t++){
-            const idx=(refW-latN-t+refBufSize*4)%refBufSize;
-            nlmsW[t]+=norm*err*refBuf[idx];
-          }
-
           micPow+=micRaw*micRaw;
-          refPow+=echoEst*echoEst;
-          cleanPow+=err*err;
 
-          // Delay path — plays back CLEANED signal (err) not raw mic
-          // err = mic - echo_estimate = real new sound only, no feedback
-          ringBuf[wPos]=err;
+          // Pure delay — no AEC
+          ringBuf[wPos]=micRaw;
           wPos=(wPos+1)%bufN;
           if(!filled&&wPos===0)filled=true;
-
-          // Read delayed output — this is cleaned audio
-          let outSample=filled?ringBuf[rPos]:0;
+          const outSample=filled?ringBuf[rPos]:0;
           rPos=(rPos+1)%bufN;
-
-          // Apply notch filters if active
-          if(notchActive&&notches.length>0) outSample=applyNotches(outSample);
-
           out[i]=outSample;
 
-          // Store in ref buffer for NLMS (what speaker actually plays)
-          refBuf[refW]=outSample*oGain;
-          refW=(refW+1)%refBufSize;
+          cleanPow+=outSample*outSample;
         }
 
         const n=inp.length;
-        dbgMic=micPow/n;dbgRef=refPow/n;dbgClean=cleanPow/n;dbgSpkGain=oGain*iGain;
+        dbgMic=micPow/n;dbgClean=cleanPow/n;
+        dbgSpkGain=outGainNode.gain.value*iGain;
 
-        if(filled){
-          bufferFill.style.width='100%';
-          bufferLabel.textContent=`Buffer: ${delaySec.toFixed(1)}s / ${delaySec.toFixed(1)}s`;
-        }else{
-          bufferFill.style.width=((wPos/bufN)*100)+'%';
-          bufferLabel.textContent=`Buffer: ${(wPos/sr).toFixed(1)}s / ${delaySec.toFixed(1)}s`;
-        }
+        if(filled){bufferFill.style.width='100%';bufferLabel.textContent=`Buffer: ${delaySec.toFixed(1)}s / ${delaySec.toFixed(1)}s`;}
+        else{bufferFill.style.width=((wPos/bufN)*100)+'%';bufferLabel.textContent=`Buffer: ${(wPos/sr).toFixed(1)}s / ${delaySec.toFixed(1)}s`;}
       };
-
-      // Feedback analyser — listens on the output path
-      feedbackAnalyser = audioCtx.createAnalyser();
-      feedbackAnalyser.fftSize = 2048;
-      feedbackAnalyser.smoothingTimeConstant = 0.8;
 
       sourceNode.connect(analyser);
       sourceNode.connect(inGainNode);
       inGainNode.connect(procNode);
       procNode.connect(outGainNode);
-      outGainNode.connect(feedbackAnalyser);
       outGainNode.connect(audioCtx.destination);
 
       running=true;
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v5.9');
+      setStatus('Live — v6.1');
       startDebugTimer();
-      startFftDetector(sr);
-      startTsHistory();
       drawViz();
     }catch(err){setStatus('Error: '+err.message);console.error(err);}
   }
 
   function stop(){
-    stopFftDetector();
-    stopTsHistory();
     stopDebugTimer();
     if(procNode){procNode.disconnect();procNode=null;}
     if(inGainNode){inGainNode.disconnect();inGainNode=null;}
@@ -1080,7 +839,7 @@
     if(sourceNode){sourceNode.disconnect();sourceNode=null;}
     if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
     if(audioCtx){audioCtx.close();audioCtx=null;}
-    ringBuf=null;refBuf=null;rollingBuf=null;nlmsW=null;notches=[];
+    ringBuf=null;rollingBuf=null;
     running=false;filled=false;
     mainBtn.textContent='▶ Start Listening';
     mainBtn.classList.remove('active','stop');
@@ -1089,7 +848,6 @@
     bufferFill.style.width='0%';
     bufferLabel.textContent='Buffer: 0.0s / 0.0s';
     ctx2d.clearRect(0,0,canvas.width,canvas.height);
-    document.getElementById('notchNote').textContent='notch: idle';
   }
 
   function setStatus(msg){statusText.textContent=msg;}
@@ -1102,16 +860,13 @@
     const data=new Uint8Array(analyser.frequencyBinCount);
     analyser.getByteTimeDomainData(data);
     ctx2d.clearRect(0,0,W,H);
-    ctx2d.strokeStyle='rgba(0,255,170,0.8)';
-    ctx2d.lineWidth=1.5;
-    ctx2d.shadowColor='rgba(0,255,170,0.4)';
-    ctx2d.shadowBlur=6;
+    ctx2d.strokeStyle='rgba(0,255,170,0.8)';ctx2d.lineWidth=1.5;
+    ctx2d.shadowColor='rgba(0,255,170,0.4)';ctx2d.shadowBlur=6;
     ctx2d.beginPath();
     const sw=W/data.length;let x=0;
     for(let i=0;i<data.length;i++){
       const y=(data[i]/128.0)*(H/2);
-      if(i===0)ctx2d.moveTo(x,y);else ctx2d.lineTo(x,y);
-      x+=sw;
+      if(i===0)ctx2d.moveTo(x,y);else ctx2d.lineTo(x,y);x+=sw;
     }
     ctx2d.stroke();ctx2d.shadowBlur=0;
   }
