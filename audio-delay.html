@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v4.3</div>
+    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v4.4</div>
   </header>
 
   <!-- Delay control -->
@@ -502,14 +502,18 @@
 
   let dbgMic = 0, dbgRef = 0, dbgClean = 0, dbgSpkGain = 1, dbgSR = 0;
 
-  // Dynamic ducking — reduces output when mic level spikes to prevent feedback
-  let duckActive  = true;   // enabled by default
-  let duckGain    = 1.0;    // current duck multiplier (1=full, 0=muted)
-  let duckTarget  = 1.0;    // target we're moving toward
-  let baseVolume  = 0.8;    // the "safe" volume set by auto setup
-  const DUCK_ATTACK  = 0.95;  // fast attack (per-block)
-  const DUCK_RELEASE = 0.002; // slow release (per-block)
-  const DUCK_THRESH  = 0.05;  // mic RMS threshold to trigger duck (linear)
+  // Dynamic ducking — reduces output only when mic level is RISING fast
+  // (indicates new external sound) rather than on absolute level
+  // This lets sustained sounds (voice, music) play back normally
+  let duckActive   = true;
+  let duckGain     = 1.0;
+  let duckTarget   = 1.0;
+  let baseVolume   = 0.8;
+  let prevMicRMS   = 0;
+  const DUCK_ATTACK  = 0.98;   // fast duck
+  const DUCK_RELEASE = 0.003;  // slow restore (~3s)
+  const DUCK_RISE_THRESH = 0.03; // how fast mic must rise to trigger duck
+  const DUCK_ABS_THRESH  = 0.08; // also duck if very loud regardless
 
   // ── DOM ────────────────────────────────────────────────────────────────────
   const delaySlider   = document.getElementById('delaySlider');
@@ -961,17 +965,18 @@
         const n=inp.length;
         dbgMic=micPow/n; dbgRef=refPow/n; dbgClean=cleanPow/n; dbgSpkGain=oGain*iGain;
 
-        // Dynamic ducking: if mic suddenly loud, reduce output to prevent loop runaway
+        // Dynamic ducking: only duck when mic level is RISING sharply
+        // This prevents feedback from sudden sounds without muting sustained audio
         if (duckActive) {
           const micRMS = Math.sqrt(micPow/n);
-          if (micRMS > DUCK_THRESH) {
-            // Spike detected — duck output fast
-            duckTarget = 0.2;
+          const rise   = micRMS - prevMicRMS;
+          prevMicRMS   = micRMS * 0.8 + prevMicRMS * 0.2; // smoothed tracker
+
+          if (rise > DUCK_RISE_THRESH || micRMS > DUCK_ABS_THRESH) {
+            duckTarget = 0.15; // duck fast
           } else {
-            // Quiet — slowly restore
-            duckTarget = 1.0;
+            duckTarget = 1.0;  // restore slowly
           }
-          // Smooth toward target
           duckGain += (duckTarget - duckGain) * (duckTarget < duckGain ? DUCK_ATTACK : DUCK_RELEASE);
           outGainNode.gain.setTargetAtTime(baseVolume * duckGain, audioCtx.currentTime, 0.01);
         }
@@ -995,7 +1000,7 @@
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v4.3');
+      setStatus('Live — v4.4');
       startDebugTimer();
       drawViz();
     } catch(err){
