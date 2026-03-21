@@ -54,7 +54,7 @@
 
 <h1>ECHO</h1>
 <div class="sub">DELAY EVERYTHING</div>
-<div class="version">v1.4</div>
+<div class="version">v1.6</div>
 
 <div class="panel">
   <div class="label-row">
@@ -94,9 +94,25 @@
   <div style="font-size:9px;color:var(--dim);margin-top:6px;" id="micHint">Plug in headphones with mic, tap Scan, select headset mic for best results.</div>
 </div>
 
+<div class="panel" style="width:100%;max-width:400px;">
+  <div class="label-row" style="margin-bottom:8px;">
+    <span class="label">Output</span>
+    <button onclick="scanOutputs()" style="font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.15em;background:transparent;border:1px solid var(--dim);color:var(--dim);padding:3px 8px;border-radius:2px;cursor:pointer;">⟳ SCAN</button>
+  </div>
+  <select id="outSel" style="font-family:'Share Tech Mono',monospace;font-size:12px;background:#0a0a0a;border:1px solid var(--border);color:var(--text);padding:8px;border-radius:3px;width:100%;">
+    <option value="">Default (phone speaker)</option>
+  </select>
+  <div style="font-size:9px;color:var(--dim);margin-top:6px;" id="outHint">Note: if BT headphones are connected, Android may force audio through them regardless.</div>
+</div>
+
 <button class="btn" id="btn" onclick="toggle()">▶ START</button>
 
 <div style="margin-top:12px;background:#111;border:2px solid var(--accent);border-radius:4px;padding:12px;font-size:12px;color:var(--accent);line-height:1.8;word-break:break-all;width:100%;max-width:400px;height:200px;overflow-y:auto;" id="dbg">—</div>
+<div style="display:flex;gap:8px;margin-top:8px;width:100%;max-width:400px;">
+  <button onclick="shareDebug()" style="font-family:'Share Tech Mono',monospace;font-size:11px;letter-spacing:0.15em;background:transparent;border:1px solid var(--accent);color:var(--accent);padding:8px 12px;border-radius:3px;cursor:pointer;flex:1;">📡 SHARE DEBUG</button>
+  <button onclick="copyDebug()" style="font-family:'Share Tech Mono',monospace;font-size:11px;letter-spacing:0.15em;background:transparent;border:1px solid var(--dim);color:var(--dim);padding:8px 12px;border-radius:3px;cursor:pointer;flex:1;">📋 COPY</button>
+</div>
+<div style="margin-top:6px;font-size:11px;color:var(--warn);width:100%;max-width:400px;" id="shareNote"></div>
 
 <div class="status"><span class="dot" id="dot"></span><span id="status">Ready</span></div>
 <div class="bar-wrap" style="width:100%;max-width:400px;margin-top:10px;">
@@ -141,6 +157,91 @@
   function stopDbg() {
     if (dbgTimer) { clearInterval(dbgTimer); dbgTimer = null; }
     document.getElementById('dbg').textContent = '—';
+  }
+
+  // Share debug
+  function getDebugJson() {
+    const mic = document.getElementById('micSel');
+    return JSON.stringify({
+      timestamp: new Date().toISOString(),
+      version: 'v1.4',
+      settings: {
+        delaySec: parseFloat(document.getElementById('delaySlider').value),
+        volumePct: parseInt(document.getElementById('volSlider').value),
+        micBoost:  parseFloat(document.getElementById('gainSlider').value),
+        micDevice: mic.options[mic.selectedIndex]?.text || 'default',
+        outDevice: document.getElementById('outSel').options[document.getElementById('outSel').selectedIndex]?.text || 'default',
+        ctxState: ctx?.state || 'null',
+        sampleRate: dbgSR,
+        filled: dbgFilled
+      },
+      timeSeries: [...tsData]
+    }, null, 2);
+  }
+
+  async function shareDebug() {
+    const json = getDebugJson();
+    const blob = new Blob([json], {type:'application/json'});
+    document.getElementById('shareNote').textContent = 'Uploading...';
+    let url = null;
+    try {
+      const fd = new FormData(); fd.append('file', blob, 'echo-debug.json');
+      const r = await fetch('https://0x0.st', {method:'POST', body:fd});
+      if (r.ok) url = (await r.text()).trim();
+    } catch(e) {}
+    if (!url) {
+      try {
+        const r = await fetch('https://transfer.sh/echo-debug.json', {method:'PUT', body:blob, headers:{'Max-Days':'1'}});
+        if (r.ok) url = (await r.text()).trim();
+      } catch(e) {}
+    }
+    if (url) {
+      document.getElementById('shareNote').textContent = '✓ ' + url;
+      if (navigator.clipboard) navigator.clipboard.writeText(url).catch(()=>{});
+    } else {
+      copyDebug();
+      document.getElementById('shareNote').textContent = 'Upload failed — copied to clipboard instead';
+    }
+  }
+
+  function copyDebug() {
+    const json = getDebugJson();
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(json)
+        .then(() => document.getElementById('shareNote').textContent = '✓ Copied to clipboard')
+        .catch(() => document.getElementById('shareNote').textContent = 'Copy failed — select text manually');
+    }
+  }
+
+  // Resume AudioContext if suspended (Android Chrome sometimes suspends it)
+  function ensureCtxRunning() {
+    if (ctx && ctx.state === 'suspended') {
+      ctx.resume();
+    }
+  }
+
+  async function scanOutputs() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const outputs = devices.filter(d => d.kind === 'audiooutput');
+      const sel = document.getElementById('outSel');
+      sel.innerHTML = '<option value="">Default (phone speaker)</option>';
+      outputs.forEach((o, i) => {
+        const opt = document.createElement('option');
+        opt.value = o.deviceId;
+        opt.textContent = o.label || 'Output ' + (i+1);
+        if (o.label.toLowerCase().includes('speaker')) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      const hint = document.getElementById('outHint');
+      if (outputs.length === 0) {
+        hint.textContent = 'No output devices found — browser may not support output selection on Android.';
+      } else {
+        hint.textContent = `Found ${outputs.length} output(s). Select phone speaker to play out loud.`;
+      }
+    } catch(e) {
+      document.getElementById('outHint').textContent = 'Error: ' + e.message;
+    }
   }
 
   async function scanMics() {
@@ -189,7 +290,12 @@
     try {
       document.getElementById('status').textContent = 'Opening mic...';
       stream = await navigator.mediaDevices.getUserMedia({ audio: getMicConstraints(), video: false });
-      ctx    = new AudioContext();
+      // Try to set output device if setSinkId is supported
+      const outDeviceId = document.getElementById('outSel').value;
+      ctx = new AudioContext();
+      if (outDeviceId && ctx.setSinkId) {
+        ctx.setSinkId(outDeviceId).catch(e => console.warn('setSinkId failed:', e));
+      }
       const sr  = ctx.sampleRate;
       const sec = parseFloat(document.getElementById('delaySlider').value);
       const vol = parseInt(document.getElementById('volSlider').value) / 100;
@@ -232,6 +338,13 @@
       proc.connect(outGain);
       outGain.connect(ctx.destination);
 
+      // Resume AudioContext on any touch (Android requirement)
+      document.addEventListener('touchstart', ensureCtxRunning, {once:false});
+      document.addEventListener('click', ensureCtxRunning, {once:false});
+      // Also resume immediately and periodically
+      ctx.resume();
+      setInterval(() => { if(running && ctx) ctx.resume(); }, 1000);
+
       running = true;
       document.getElementById('btn').textContent = '■ STOP';
       document.getElementById('btn').classList.add('on');
@@ -260,7 +373,7 @@
   // Auto-scan for mics on load
   window.addEventListener('load', () => {
     navigator.mediaDevices.getUserMedia({audio:true,video:false})
-      .then(tmp => { tmp.getTracks().forEach(t=>t.stop()); return scanMics(); })
+      .then(tmp => { tmp.getTracks().forEach(t=>t.stop()); scanMics(); scanOutputs(); })
       .catch(() => {}); // silently fail if no permission yet
   });
 </script>
