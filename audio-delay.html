@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v2.3</div>
+    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v2.6</div>
   </header>
 
   <!-- Delay control -->
@@ -369,6 +369,23 @@
       <span class="tick">15x</span>
       <span class="tick">20x</span>
     </div>
+  </div>
+
+  <!-- Echo gain (AEC subtraction strength) -->
+  <div class="panel">
+    <div class="label-row">
+      <span class="label">Echo Cancellation</span>
+      <span><span class="value-display" id="echoGainVal" style="font-size:20px;color:var(--accent2)">0.36</span></span>
+    </div>
+    <input type="range" id="echoGainSlider" min="0" max="2" step="0.01" value="0.36">
+    <div class="ticks">
+      <span class="tick">0</span>
+      <span class="tick">0.5</span>
+      <span class="tick">1.0</span>
+      <span class="tick">1.5</span>
+      <span class="tick">2.0</span>
+    </div>
+    <div style="font-size:9px;color:var(--dim);margin-top:6px;">How much speaker bleed to subtract. 0=off, 0.36=measured, tune until echo stops.</div>
   </div>
 
   <!-- Mic selector -->
@@ -458,7 +475,7 @@
         style="-webkit-appearance:none;flex:1;height:2px;background:var(--border);outline:none;cursor:pointer;">
       <span style="color:var(--accent2);font-size:16px;min-width:32px;" id="recDurVal">5s</span>
     </div>
-    <style>#recDurSlider::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;background:var(--accent2);border-radius:50%;} #inGainSlider::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;background:var(--accent);border-radius:50%;box-shadow:0 0 6px rgba(0,255,170,0.5);}</style>
+    <style>#recDurSlider::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;background:var(--accent2);border-radius:50%;} #inGainSlider::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;background:var(--accent);border-radius:50%;box-shadow:0 0 6px rgba(0,255,170,0.5);} #echoGainSlider::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;background:var(--accent2);border-radius:50%;}</style>
     <div style="display:flex;gap:8px;margin-bottom:8px;">
       <button class="btn" id="recBtn" onclick="startRecord()" style="border-color:var(--accent2);color:var(--accent2);margin:0;">⏺ RECORD</button>
       <button class="btn" id="stopRecBtn" onclick="stopRecord()" disabled style="border-color:var(--dim);color:var(--dim);margin:0;">■ STOP + SAVE</button>
@@ -543,6 +560,11 @@
     const v = parseFloat(document.getElementById('echoGainSlider').value);
     document.getElementById('echoGainVal').textContent = v.toFixed(2);
     echoGain = v;
+  });
+
+  document.getElementById('echoGainSlider').addEventListener('input', () => {
+    echoGain = parseFloat(document.getElementById('echoGainSlider').value);
+    document.getElementById('echoGainVal').textContent = echoGain.toFixed(2);
   });
 
   latencySlider.addEventListener('input', () => {
@@ -661,7 +683,7 @@
           outputVolPct: parseInt(volumeSlider.value),
           inputGainX:   parseFloat(inGainSlider.value),
           latencyMs:    parseInt(latencySlider.value),
-          echoGain,
+          echoGain: echoGain,
           sampleRate:   sr,
           latNSamples:  latN
         },
@@ -990,15 +1012,15 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
           rPos = (rPos+1)%bufN;
           out[i] = outSample;
 
-          // 6. Store pre-outGain output in ref buffer
-          refBuf[refW] = outSample;
+          // 6. Store true acoustic output in ref buffer (what the speaker actually emits)
+          // outSample is pre-outGain, so multiply by outGain to get acoustic level
+          refBuf[refW] = outSample * outGain;
           refW = (refW+1)%refBufSize;
         }
 
         // Update debug vars (read by UI timer)
         const n = inp.length;
         dbgMic=micPow/n; dbgRef=refPow/n; dbgClean=cleanPow/n; dbgSpkGain=outGain*inGain;
-        dbgEchoGain=echoGain;
 
         // Buffer progress
         if (filled) {
@@ -1020,7 +1042,7 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v2.3');
+      setStatus('Live — v2.6');
       startDebugTimer();
       drawViz();
 
@@ -1031,7 +1053,6 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
   }
 
   function stop() {
-    saveLast(); // auto-save before teardown
     stopDebugTimer();
     if (procNode)    { procNode.disconnect();    procNode=null; }
     if (inGainNode)  { inGainNode.disconnect();  inGainNode=null; }
