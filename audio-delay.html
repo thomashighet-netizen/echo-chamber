@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v2.8</div>
+    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v2.9</div>
   </header>
 
   <!-- Delay control -->
@@ -983,18 +983,14 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
           rollingW = (rollingW+1)%rollingSize;
           if (!rollingFull && rollingW===0) rollingFull=true;
 
-          // 2. Only subtract once we have latN samples in the buffer
+          // 2. Only subtract once refBuf has latN samples written
           let spkAtMic = 0;
           if (refReady) {
             const refIdx = (refW - latN + refBufSize*4) % refBufSize;
             spkAtMic = refBuf[refIdx] * echoGain;
           }
-          // dummy line to keep structure
-          // Multiply by outGain to get acoustic level, then echoGain for room attenuation
-          // echoGain = measured room attenuation (0.36 = -8.8dB). No gain scaling needed.
-          const spkAtMic = refBuf[refIdx] * echoGain;
 
-          // 3. Subtract from mic (both now in true mic domain)
+          // 3. Subtract speaker echo from mic
           const clean = micRaw - spkAtMic;
 
           micPow   += micRaw*micRaw;
@@ -1041,7 +1037,7 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v2.8');
+      setStatus('Live — v2.9');
       startDebugTimer();
       drawViz();
 
