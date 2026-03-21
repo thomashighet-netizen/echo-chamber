@@ -3,952 +3,169 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Echo Chamber</title>
+<title>Echo</title>
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Bebas+Neue&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #0a0a0f;
-    --panel: #10101a;
-    --border: #1e1e30;
-    --accent: #00ffaa;
-    --accent2: #ff4466;
-    --warn: #ffaa00;
-    --text: #c8c8e0;
-    --dim: #44445a;
-    --glow: 0 0 20px rgba(0,255,170,0.3);
+    --bg: #0a0a0f; --panel: #10101a; --border: #1e1e30;
+    --accent: #00ffaa; --accent2: #ff4466; --warn: #ffaa00;
+    --text: #c8c8e0; --dim: #44445a;
   }
-
   * { box-sizing: border-box; margin: 0; padding: 0; }
-
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: 'Share Tech Mono', monospace;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 20px;
-    overflow-x: hidden;
-  }
-
-  body::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    background:
-      repeating-linear-gradient(
-        0deg,
-        transparent,
-        transparent 2px,
-        rgba(0,255,170,0.015) 2px,
-        rgba(0,255,170,0.015) 4px
-      );
-    pointer-events: none;
-    z-index: 0;
-  }
-
-  .container {
-    position: relative;
-    z-index: 1;
-    width: 100%;
-    max-width: 480px;
-  }
-
-  header {
-    text-align: center;
-    margin-bottom: 36px;
-  }
-
-  .title {
-    font-family: 'Bebas Neue', sans-serif;
-    font-size: clamp(48px, 12vw, 80px);
-    letter-spacing: 0.12em;
-    color: var(--accent);
-    text-shadow: 0 0 40px rgba(0,255,170,0.5), 0 0 80px rgba(0,255,170,0.2);
-    line-height: 1;
-  }
-
-  .subtitle {
-    font-size: 11px;
-    letter-spacing: 0.3em;
-    color: var(--dim);
-    text-transform: uppercase;
-    margin-top: 6px;
-  }
-
-  .panel {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 28px;
-    margin-bottom: 16px;
-  }
-
-  .label-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    margin-bottom: 12px;
-  }
-
-  .label {
-    font-size: 10px;
-    letter-spacing: 0.25em;
-    text-transform: uppercase;
-    color: var(--dim);
-  }
-
-  .value-display {
-    font-size: 28px;
-    color: var(--accent);
-    font-family: 'Bebas Neue', sans-serif;
-    letter-spacing: 0.05em;
-    text-shadow: var(--glow);
-    transition: color 0.2s;
-  }
-
-  .unit {
-    font-size: 13px;
-    color: var(--dim);
-    margin-left: 3px;
-  }
-
-  /* Slider */
-  input[type=range] {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 100%;
-    height: 2px;
-    background: var(--border);
-    outline: none;
-    cursor: pointer;
-    position: relative;
-  }
-
-  input[type=range]::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 18px;
-    height: 18px;
-    background: var(--accent);
-    border-radius: 50%;
-    box-shadow: 0 0 10px rgba(0,255,170,0.6);
-    cursor: pointer;
-    transition: transform 0.15s, box-shadow 0.15s;
-  }
-
-  input[type=range]::-webkit-slider-thumb:hover {
-    transform: scale(1.25);
-    box-shadow: 0 0 20px rgba(0,255,170,0.9);
-  }
-
-  input[type=range]::-moz-range-thumb {
-    width: 18px;
-    height: 18px;
-    background: var(--accent);
-    border: none;
-    border-radius: 50%;
-    box-shadow: 0 0 10px rgba(0,255,170,0.6);
-    cursor: pointer;
-  }
-
-  /* Tick marks */
-  .ticks {
-    display: flex;
-    justify-content: space-between;
-    margin-top: 8px;
-  }
-
-  .tick {
-    font-size: 9px;
-    color: var(--dim);
-    letter-spacing: 0;
-    text-align: center;
-    min-width: 30px;
-  }
-
-  /* Volume slider - different color */
-  #volumeSlider::-webkit-slider-thumb {
-    background: var(--warn);
-    box-shadow: 0 0 10px rgba(255,170,0,0.6);
-  }
-
-  #volumeSlider::-webkit-slider-thumb:hover {
-    box-shadow: 0 0 20px rgba(255,170,0,0.9);
-  }
-
-  .vol-value { color: var(--warn); text-shadow: 0 0 20px rgba(255,170,0,0.3); }
-
-  /* Visualizer */
-  .viz-panel {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 16px;
-    margin-bottom: 16px;
-  }
-
-  canvas {
-    width: 100%;
-    height: 60px;
-    display: block;
-    border-radius: 2px;
-  }
-
-  /* Big button */
-  .btn {
-    width: 100%;
-    padding: 18px;
-    background: transparent;
-    border: 1px solid var(--accent);
-    color: var(--accent);
-    font-family: 'Bebas Neue', sans-serif;
-    font-size: 22px;
-    letter-spacing: 0.3em;
-    cursor: pointer;
-    border-radius: 4px;
-    text-transform: uppercase;
-    transition: background 0.2s, box-shadow 0.2s, color 0.2s;
-    position: relative;
-    overflow: hidden;
-  }
-
-  .btn:hover {
-    background: rgba(0,255,170,0.08);
-    box-shadow: var(--glow);
-  }
-
-  .btn.active {
-    background: rgba(0,255,170,0.12);
-    box-shadow: 0 0 30px rgba(0,255,170,0.4);
-    border-color: var(--accent);
-  }
-
-  .btn.active::after {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 1px;
-    background: linear-gradient(90deg, transparent, var(--accent), transparent);
-    animation: scan 2s linear infinite;
-  }
-
-  @keyframes scan {
-    0% { top: 0; }
-    100% { top: 100%; }
-  }
-
-  .btn.stop {
-    border-color: var(--accent2);
-    color: var(--accent2);
-  }
-
-  .btn.stop:hover {
-    background: rgba(255,68,102,0.08);
-    box-shadow: 0 0 20px rgba(255,68,102,0.3);
-  }
-
-  /* Status */
-  .status-bar {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-top: 16px;
-    padding: 10px 14px;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    font-size: 10px;
-    letter-spacing: 0.2em;
-    color: var(--dim);
-    text-transform: uppercase;
-  }
-
-  .dot {
-    width: 6px; height: 6px;
-    border-radius: 50%;
-    background: var(--dim);
-    flex-shrink: 0;
-    transition: background 0.3s, box-shadow 0.3s;
-  }
-
-  .dot.live {
-    background: var(--accent);
-    box-shadow: 0 0 8px rgba(0,255,170,0.8);
-    animation: pulse 1s ease-in-out infinite;
-  }
-
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
-  }
-
-  .status-text { flex: 1; }
-
-  /* Buffer fill */
-  .buffer-track {
-    height: 2px;
-    background: var(--border);
-    border-radius: 1px;
-    margin-top: 10px;
-    overflow: hidden;
-  }
-
-  .buffer-fill {
-    height: 100%;
-    background: var(--accent);
-    border-radius: 1px;
-    width: 0%;
-    transition: width 0.1s linear;
-    box-shadow: 0 0 6px rgba(0,255,170,0.5);
-  }
-
-  /* Slider track fill via CSS custom property */
-  input[type=range] {
-    background: linear-gradient(to right, var(--accent) 0%, var(--accent) var(--fill, 0%), var(--border) var(--fill, 0%), var(--border) 100%);
-  }
-
-  #volumeSlider {
-    background: linear-gradient(to right, var(--warn) 0%, var(--warn) var(--fill, 0%), var(--border) var(--fill, 0%), var(--border) 100%);
-  }
+  body { background: var(--bg); color: var(--text); font-family: 'Share Tech Mono', monospace;
+    min-height: 100vh; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; padding: 24px; }
+  h1 { font-family: 'Bebas Neue', sans-serif; font-size: 72px; color: var(--accent);
+    text-shadow: 0 0 40px rgba(0,255,170,0.4); letter-spacing: 0.1em; line-height: 1; }
+  .sub { font-size: 11px; letter-spacing: 0.25em; color: var(--dim); margin-bottom: 32px; }
+  .version { display:inline-block; background:var(--accent); color:#000;
+    font-size:11px; font-weight:bold; letter-spacing:0.2em; padding:2px 8px;
+    border-radius:2px; margin-bottom: 32px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius:4px;
+    padding: 20px; margin-bottom: 12px; width: 100%; max-width: 400px; }
+  .label-row { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:10px; }
+  .label { font-size:10px; letter-spacing:0.2em; color:var(--dim); text-transform:uppercase; }
+  .val { font-size:28px; color:var(--accent); font-family:'Bebas Neue',sans-serif; }
+  .unit { font-size:13px; color:var(--dim); }
+  input[type=range] { -webkit-appearance:none; width:100%; height:2px;
+    background:var(--border); outline:none; cursor:pointer; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:18px; height:18px;
+    background:var(--accent); border-radius:50%; box-shadow:0 0 8px rgba(0,255,170,0.5); }
+  .vol-val { color: var(--warn); }
+  #volSlider::-webkit-slider-thumb { background: var(--warn); box-shadow:0 0 8px rgba(255,170,0,0.5); }
+  .btn { font-family:'Share Tech Mono',monospace; font-size:18px; letter-spacing:0.3em;
+    background:transparent; border:2px solid var(--accent); color:var(--accent);
+    padding:18px; border-radius:4px; cursor:pointer; width:100%; max-width:400px;
+    margin-bottom:10px; transition: all 0.15s; }
+  .btn:active { background: rgba(0,255,170,0.1); }
+  .btn.on { background:rgba(0,255,170,0.12); box-shadow:0 0 24px rgba(0,255,170,0.3); }
+  .status { font-size:11px; letter-spacing:0.2em; color:var(--dim); margin-top:8px; }
+  .dot { display:inline-block; width:7px; height:7px; border-radius:50%;
+    background:var(--dim); margin-right:8px; vertical-align:middle; }
+  .dot.live { background:var(--accent); box-shadow:0 0 6px rgba(0,255,170,0.8);
+    animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  .bar-wrap { height:3px; background:var(--border); border-radius:2px; margin-top:8px; overflow:hidden; }
+  .bar-fill { height:100%; background:var(--accent); border-radius:2px; width:0%;
+    transition:width 0.1s; }
 </style>
 </head>
 <body>
 
-<div class="container">
-  <header>
-    <div class="title">ECHO</div>
-    <div class="subtitle">Variable Delay Monitor</div>
-    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v6.6</div>
-  </header>
+<h1>ECHO</h1>
+<div class="sub">DELAY EVERYTHING</div>
+<div class="version">v1.0</div>
 
-  <!-- Delay control -->
-  <div class="panel">
-    <div class="label-row">
-      <span class="label">Delay</span>
-      <span><span class="value-display" id="delayVal">1.0</span><span class="unit">s</span></span>
-    </div>
-    <input type="range" id="delaySlider" min="0.1" max="10" step="0.1" value="1.0">
-    <div class="ticks">
-      <span class="tick">0.1</span>
-      <span class="tick">2.5</span>
-      <span class="tick">5</span>
-      <span class="tick">7.5</span>
-      <span class="tick">10</span>
-    </div>
+<div class="panel">
+  <div class="label-row">
+    <span class="label">Delay</span>
+    <span><span class="val" id="delayVal">1.0</span><span class="unit">s</span></span>
   </div>
+  <input type="range" id="delaySlider" min="0.1" max="5" step="0.1" value="1.0"
+    oninput="document.getElementById('delayVal').textContent=parseFloat(this.value).toFixed(1)">
+</div>
 
-  <!-- Strobe control -->
-  <div class="panel">
-    <div class="label-row">
-      <span class="label">Strobe Mode</span>
-      <button id="strobeBtn" onclick="toggleStrobe()" style="font-family:'Share Tech Mono',monospace;font-size:10px;letter-spacing:0.15em;background:transparent;border:1px solid var(--dim);color:var(--dim);padding:4px 10px;border-radius:2px;cursor:pointer;">OFF</button>
-    </div>
-    <div style="display:flex;gap:12px;margin-top:10px;">
-      <div style="flex:1;">
-        <div class="label" style="margin-bottom:6px;">PLAY</div>
-        <div style="font-size:24px;color:var(--accent);" id="strobePlayVal">800</div><span style="font-size:11px;color:var(--dim);">ms</span>
-        <input type="range" id="strobePlaySlider" min="100" max="2000" step="50" value="800"
-          oninput="document.getElementById('strobePlayVal').textContent=this.value;">
-      </div>
-      <div style="flex:1;">
-        <div class="label" style="margin-bottom:6px;">MUTE</div>
-        <div style="font-size:24px;color:var(--accent2);" id="strobeMuteVal">200</div><span style="font-size:11px;color:var(--dim);">ms</span>
-        <input type="range" id="strobeMuteSlider" min="50" max="1000" step="50" value="200"
-          oninput="document.getElementById('strobeMuteVal').textContent=this.value;">
-      </div>
-    </div>
-    <div style="font-size:9px;color:var(--dim);margin-top:8px;">Plays then mutes to break feedback loop. Adjust to taste.</div>
+<div class="panel">
+  <div class="label-row">
+    <span class="label">Volume</span>
+    <span><span class="val vol-val" id="volVal">80</span><span class="unit">%</span></span>
   </div>
+  <input type="range" id="volSlider" min="0" max="100" value="80"
+    oninput="document.getElementById('volVal').textContent=this.value;if(outGain)outGain.gain.setTargetAtTime(this.value/100,ctx.currentTime,0.05)">
+</div>
 
-  <!-- Volume control -->
-  <div class="panel">
-    <div class="label-row">
-      <span class="label">Output Volume</span>
-      <span><span class="value-display vol-value" id="volVal">80</span><span class="unit">%</span></span>
-    </div>
-    <input type="range" id="volumeSlider" min="0" max="100" step="1" value="80">
-    <div class="ticks">
-      <span class="tick">0</span>
-      <span class="tick">25</span>
-      <span class="tick">50</span>
-      <span class="tick">75</span>
-      <span class="tick">100</span>
-    </div>
+<div class="panel">
+  <div class="label-row">
+    <span class="label">Mic Boost</span>
+    <span><span class="val" id="gainVal">3</span><span class="unit">x</span></span>
   </div>
+  <input type="range" id="gainSlider" min="1" max="10" step="0.5" value="3"
+    oninput="document.getElementById('gainVal').textContent=parseFloat(this.value).toFixed(1);if(inGain)inGain.gain.setTargetAtTime(parseFloat(this.value),ctx.currentTime,0.05)">
+</div>
 
-  <!-- Input gain -->
-  <div class="panel">
-    <div class="label-row">
-      <span class="label">Input Gain</span>
-      <span><span class="value-display" id="inGainVal" style="font-size:20px;color:var(--accent)">5</span><span class="unit">x</span></span>
-    </div>
-    <input type="range" id="inGainSlider" min="1" max="20" step="0.5" value="5" data-locked="true">
-    <div class="ticks">
-      <span class="tick">1x</span>
-      <span class="tick">5x</span>
-      <span class="tick">10x</span>
-      <span class="tick">15x</span>
-      <span class="tick">20x</span>
-    </div>
-  </div>
+<button class="btn" id="btn" onclick="toggle()">▶ START</button>
 
-  <!-- Echo gain (AEC subtraction strength) -->
-  <div class="panel">
-    <div class="label-row">
-      <span class="label">Echo Cancellation</span>
-      <span><span class="value-display" id="echoGainVal" style="font-size:20px;color:var(--accent2)">0.36</span></span>
-    </div>
-    <input type="range" id="echoGainSlider" min="0" max="2" step="0.01" value="0.36">
-    <div class="ticks">
-      <span class="tick">0</span>
-      <span class="tick">0.5</span>
-      <span class="tick">1.0</span>
-      <span class="tick">1.5</span>
-      <span class="tick">2.0</span>
-    </div>
-    <div style="font-size:9px;color:var(--dim);margin-top:6px;">How much speaker bleed to subtract. 0=off. Use Auto to measure.</div>
-    <button onclick="autoEchoGain()" style="font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.15em;background:transparent;border:1px solid var(--accent);color:var(--accent);padding:4px 10px;border-radius:2px;cursor:pointer;margin-top:6px;">⟳ AUTO</button>
-    <button id="adaptBtn" onclick="toggleAdaptive()" style="font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.15em;background:transparent;border:1px solid var(--dim);color:var(--dim);padding:4px 10px;border-radius:2px;cursor:pointer;margin-top:6px;margin-left:4px;">⟳ ADAPT</button>
-    <span style="font-size:9px;color:var(--dim);margin-left:8px;" id="autoNote"></span>
-  </div>
-
-  <!-- Mic selector -->
-  <div class="panel">
-    <div class="label-row">
-      <span class="label">Microphone</span>
-      <button onclick="refreshMics()" style="font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.15em;background:transparent;border:1px solid var(--dim);color:var(--dim);padding:3px 8px;border-radius:2px;cursor:pointer;">⟳ REFRESH</button>
-    </div>
-    <select id="micSelect" style="font-family:'Share Tech Mono',monospace;font-size:12px;background:#0a0a0a;border:1px solid var(--border);color:var(--text);padding:8px;border-radius:3px;width:100%;margin-top:4px;">
-      <option value="">Default mic</option>
-    </select>
-    <div style="font-size:9px;color:var(--dim);margin-top:6px;" id="micNote">Tap Refresh to list available microphones.</div>
-    <div style="margin-top:8px;display:flex;align-items:center;gap:10px;">
-      <label style="font-size:10px;letter-spacing:0.15em;color:var(--dim);">HARDWARE AEC</label>
-      <button id="hwAecBtn" onclick="toggleHwAec()" style="font-family:'Share Tech Mono',monospace;font-size:10px;letter-spacing:0.15em;background:transparent;border:1px solid var(--dim);color:var(--dim);padding:4px 10px;border-radius:2px;cursor:pointer;">OFF</button>
-      <span style="font-size:9px;color:var(--dim);">Use phone's built-in AEC (3 mics)</span>
-    </div>
-  </div>
-
-  <!-- Speaker latency control -->
-  <div class="panel">
-    <div class="label-row">
-      <span class="label">Speaker Latency</span>
-      <span style="display:flex;align-items:baseline;gap:10px;">
-        <span><span class="value-display" id="latencyVal" style="font-size:20px;color:var(--warn)">315</span><span class="unit">ms</span></span>
-        <button id="detectBtn" onclick="runLatencyDetection()" style="font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.2em;background:transparent;border:1px solid var(--dim);color:var(--dim);padding:4px 8px;border-radius:3px;cursor:pointer;transition:all 0.2s;" onmouseover="this.style.borderColor='var(--warn)';this.style.color='var(--warn)'" onmouseout="this.style.borderColor='var(--dim)';this.style.color='var(--dim)'">⟳ DETECT</button>
-      </span>
-    </div>
-    <input type="range" id="latencySlider" min="5" max="400" step="1" value="315">
-    <div class="ticks">
-      <span class="tick">5ms</span>
-      <span class="tick">75</span>
-      <span class="tick">150</span>
-      <span class="tick">225</span>
-      <span class="tick">400ms</span>
-    </div>
-    <div class="label" style="margin-top:8px;font-size:9px;color:var(--dim);" id="latencyNote">Estimated speaker→mic travel time. Click Detect to measure.</div>
-    <button onclick="chirpCalibrate()" style="font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:0.15em;background:transparent;border:1px solid var(--accent);color:var(--accent);padding:4px 10px;border-radius:2px;cursor:pointer;margin-top:6px;">⟳ CHIRP CAL</button>
-    <span style="font-size:9px;color:var(--dim);margin-left:8px;" id="sweepNote"></span>
-  </div>
-
-
-  <!-- Visualizer -->
-  <div class="viz-panel">
-    <div class="label" style="margin-bottom:10px;">Input Level</div>
-    <canvas id="viz" height="60"></canvas>
-    <div class="buffer-track">
-      <div class="buffer-fill" id="bufferFill"></div>
-    </div>
-    <div class="label" style="margin-top:6px; font-size:9px;" id="bufferLabel">Buffer: 0.0s / 0.0s</div>
-  </div>
-
-  <button class="btn" id="mainBtn" onclick="toggle()">▶ Start Listening</button>
-
-  <div class="status-bar">
-    <div class="dot" id="statusDot"></div>
-    <span class="status-text" id="statusText">Idle — Click start to begin</span>
-  </div>
-
-  <!-- Debug panel -->
-  <div style="margin-top:12px;background:#111;border:2px solid var(--accent);border-radius:4px;padding:12px;font-size:13px;letter-spacing:0.08em;color:var(--accent);line-height:2;word-break:break-all;min-height:60px;" id="debugInfo">—</div>
-  <div style="margin-top:6px;font-size:11px;letter-spacing:0.1em;color:var(--warn);padding:2px;" id="saveStatus"></div>
-  <div style="margin-top:4px;font-size:11px;letter-spacing:0.1em;color:#44aaff;padding:2px;" id="notchNote">notch: idle</div>
-
-  <!-- Save last button -->
-  <button class="btn" id="saveBtn" onclick="saveLast()" style="margin-top:10px;border-color:var(--warn);color:var(--warn);">⚡ SAVE LAST 10s</button>
-
-  <button class="btn" id="threshBtn" onclick="detectFeedbackThreshold()" style="margin-top:8px;border-color:#44aaff;color:#44aaff;">🔧 AUTO SETUP (latency + safe volume)</button>
-  <div style="margin-top:4px;font-size:11px;color:#44aaff;padding:2px;" id="threshNote">Measures latency and finds safe volume automatically. ~20s. Keep quiet.</div>
-  <button class="btn" id="debugUploadBtn" onclick="uploadDebugBundle()" style="margin-top:8px;border-color:#44aaff;color:#44aaff;">📡 UPLOAD DEBUG REPORT</button>
-  <div style="margin-top:8px;background:#0a0a0a;border:1px solid #222;border-radius:4px;padding:12px;font-size:13px;color:#44aaff;word-break:break-all;display:none;" id="uploadResult">—</div>
-  <div style="margin-top:12px;background:#111;border:2px solid var(--accent);border-radius:4px;padding:12px;font-size:14px;letter-spacing:0.1em;color:var(--accent);line-height:2;word-break:break-all;" id="debugInfo">—</div>
-  <div style="margin-top:6px;font-size:12px;letter-spacing:0.1em;color:var(--warn);padding:4px 2px;" id="saveStatus"></div>
-
-  <!-- Record panel -->
-  <div style="margin-top:12px;background:var(--panel);border:1px solid var(--border);border-radius:4px;padding:16px;">
-    <div style="font-size:10px;letter-spacing:0.25em;color:var(--dim);margin-bottom:10px;">CAPTURE MIC INPUT</div>
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
-      <span style="font-size:10px;letter-spacing:0.15em;color:var(--dim);">DURATION</span>
-      <input type="range" id="recDurSlider" min="2" max="30" value="5" step="1"
-        oninput="document.getElementById('recDurVal').textContent=this.value+'s'"
-        style="-webkit-appearance:none;flex:1;height:2px;background:var(--border);outline:none;cursor:pointer;">
-      <span style="color:var(--accent2);font-size:16px;min-width:32px;" id="recDurVal">5s</span>
-    </div>
-    <style>#recDurSlider::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;background:var(--accent2);border-radius:50%;} #inGainSlider::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;background:var(--accent);border-radius:50%;box-shadow:0 0 6px rgba(0,255,170,0.5);} #echoGainSlider::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;background:var(--accent2);border-radius:50%;}</style>
-    <div style="display:flex;gap:8px;margin-bottom:8px;">
-      <button class="btn" id="recBtn" onclick="startRecord()" style="border-color:var(--accent2);color:var(--accent2);margin:0;">⏺ RECORD</button>
-      <button class="btn" id="stopRecBtn" onclick="stopRecord()" disabled style="border-color:var(--dim);color:var(--dim);margin:0;">■ STOP + SAVE</button>
-    </div>
-    <button class="btn" id="saveLastBtn" onclick="saveLast()"
-      style="border-color:var(--warn);color:var(--warn);margin-bottom:8px;">
-      ⚡ SAVE LAST 10s
-    </button>
-    <button class="dl-btn" id="dlRecBtn" onclick="downloadRecording()" disabled
-      style="font-family:'Share Tech Mono',monospace;font-size:11px;letter-spacing:0.15em;background:transparent;border:1px solid var(--dim);color:var(--dim);padding:7px 14px;border-radius:3px;cursor:pointer;width:100%;">↓ Download recorded.wav</button>
-  
+<div class="status"><span class="dot" id="dot"></span><span id="status">Ready</span></div>
+<div class="bar-wrap" style="width:100%;max-width:400px;margin-top:10px;">
+  <div class="bar-fill" id="bar"></div>
 </div>
 
 <script>
-  let audioCtx=null,sourceNode=null,inGainNode=null,outGainNode=null;
-  let procNode=null,analyser=null,stream=null,running=false;
-  let ringBuf=null,wPos=0,rPos=0,filled=false,bufN=0;
-  let rollingBuf=null,rollingSize=0,rollingW=0,rollingFull=false;
-  let dbgMic=0,dbgRef=0,dbgClean=0,dbgSpkGain=1,dbgSR=0;
-  let baseVolume=0.5;
-  let tsHistory=[], tsTimer=null;
+  let ctx=null, stream=null, proc=null, inGain=null, outGain=null, running=false;
+  let ring=null, w=0, r=0, filled=false, N=0;
 
-  // Strobe — alternates between play and mute to prevent feedback accumulation
-  let strobeEnabled = false;
-  let strobeTimer   = null;
-  let strobePhase   = 'play'; // 'play' or 'mute'
-
-  function toggleStrobe() {
-    strobeEnabled = !strobeEnabled;
-    const btn = document.getElementById('strobeBtn');
-    btn.textContent      = strobeEnabled ? 'ON' : 'OFF';
-    btn.style.borderColor = strobeEnabled ? 'var(--accent)' : 'var(--dim)';
-    btn.style.color       = strobeEnabled ? 'var(--accent)' : 'var(--dim)';
-    if (strobeEnabled && running) startStrobe();
-    else stopStrobe();
+  async function toggle() {
+    if (!running) await start(); else stop();
   }
 
-  function startStrobe() {
-    stopStrobe();
-    if (!strobeEnabled || !outGainNode || !audioCtx) return;
-    const playMs = parseInt(document.getElementById('strobePlaySlider').value);
-    const muteMs = parseInt(document.getElementById('strobeMuteSlider').value);
+  async function start() {
+    try {
+      document.getElementById('status').textContent = 'Opening mic...';
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation:false, noiseSuppression:false, autoGainControl:false,
+                 facingMode:{ideal:'environment'} },
+        video: false
+      });
+      ctx    = new AudioContext();
+      const sr  = ctx.sampleRate;
+      const sec = parseFloat(document.getElementById('delaySlider').value);
+      const vol = parseInt(document.getElementById('volSlider').value) / 100;
+      const g   = parseFloat(document.getElementById('gainSlider').value);
 
-    function tick() {
-      if (!strobeEnabled || !running) return;
-      if (strobePhase === 'play') {
-        outGainNode.gain.setTargetAtTime(baseVolume, audioCtx.currentTime, 0.01);
-        strobePhase = 'mute';
-        strobeTimer = setTimeout(tick, playMs);
-      } else {
-        outGainNode.gain.setTargetAtTime(0, audioCtx.currentTime, 0.005);
-        strobePhase = 'play';
-        strobeTimer = setTimeout(tick, muteMs);
-      }
-    }
-    strobePhase = 'play';
-    tick();
-  }
+      N    = Math.floor(sec * sr);
+      ring = new Float32Array(N);
+      w=0; r=0; filled=false;
 
-  function stopStrobe() {
-    if (strobeTimer) { clearTimeout(strobeTimer); strobeTimer = null; }
-    if (outGainNode && audioCtx) outGainNode.gain.setTargetAtTime(baseVolume, audioCtx.currentTime, 0.05);
-  }
-  const TS_SAMPLES=20;
+      const src = ctx.createMediaStreamSource(stream);
+      inGain    = ctx.createGain(); inGain.gain.value = g;
+      outGain   = ctx.createGain(); outGain.gain.value = vol;
 
-  // ── DOM ────────────────────────────────────────────────────────────────────
-  const delaySlider  = document.getElementById('delaySlider');
-  const volumeSlider = document.getElementById('volumeSlider');
-  const inGainSlider = document.getElementById('inGainSlider');
-  const latencySlider= document.getElementById('latencySlider');
-  const echoSlider   = document.getElementById('echoGainSlider');
-  const delayVal     = document.getElementById('delayVal');
-  const volVal       = document.getElementById('volVal');
-  const inGainVal    = document.getElementById('inGainVal');
-  const latencyVal   = document.getElementById('latencyVal');
-  const echoVal      = document.getElementById('echoGainVal');
-  const latencyNote  = document.getElementById('latencyNote');
-  const detectBtn    = document.getElementById('detectBtn');
-  const mainBtn      = document.getElementById('mainBtn');
-  const statusDot    = document.getElementById('statusDot');
-  const statusText   = document.getElementById('statusText');
-  const bufferFill   = document.getElementById('bufferFill');
-  const bufferLabel  = document.getElementById('bufferLabel');
-  const canvas       = document.getElementById('viz');
-  const ctx2d        = canvas.getContext('2d');
-
-  function fill(s,pct){s.style.setProperty('--fill',Math.max(0,Math.min(100,pct))+'%');}
-  function syncSliders(){
-    delayVal.textContent  = parseFloat(delaySlider.value).toFixed(1);
-    volVal.textContent    = volumeSlider.value;
-    inGainVal.textContent = parseFloat(inGainSlider.value).toFixed(1);
-    latencyVal.textContent= latencySlider.value;
-    echoVal.textContent   = parseFloat(echoSlider.value).toFixed(2);
-    fill(delaySlider,  ((parseFloat(delaySlider.value)-0.1)/(10-0.1))*100);
-    fill(volumeSlider, parseInt(volumeSlider.value));
-    fill(inGainSlider, ((parseFloat(inGainSlider.value)-1)/(20-1))*100);
-    fill(latencySlider,((parseInt(latencySlider.value)-5)/(400-5))*100);
-  }
-  syncSliders();
-
-  delaySlider.addEventListener('input',()=>{
-    delayVal.textContent=parseFloat(delaySlider.value).toFixed(1);
-    fill(delaySlider,((parseFloat(delaySlider.value)-0.1)/(10-0.1))*100);
-  });
-  volumeSlider.addEventListener('input',()=>{
-    volVal.textContent=volumeSlider.value;
-    fill(volumeSlider,parseInt(volumeSlider.value));
-    baseVolume=parseInt(volumeSlider.value)/100;
-    if(outGainNode) outGainNode.gain.setTargetAtTime(baseVolume,audioCtx.currentTime,0.05);
-  });
-  inGainSlider.addEventListener('input',()=>{
-    const v=parseFloat(inGainSlider.value);
-    inGainVal.textContent=v.toFixed(1);
-    fill(inGainSlider,((v-1)/(20-1))*100);
-    if(inGainNode) inGainNode.gain.setTargetAtTime(v,audioCtx.currentTime,0.05);
-  });
-  latencySlider.addEventListener('input',()=>{
-    const v=parseInt(latencySlider.value);
-    latencyVal.textContent=v;
-    fill(latencySlider,((v-5)/(400-5))*100);
-    latencyNote.textContent='Manually set.';
-  });
-  echoSlider.addEventListener('input',()=>{
-    echoVal.textContent=parseFloat(echoSlider.value).toFixed(2);
-  });
-
-  // ── Mic ────────────────────────────────────────────────────────────────────
-  let hwAecEnabled = false; // off by default — use compressor instead
-  function toggleHwAec() {
-    hwAecEnabled = !hwAecEnabled;
-    const btn = document.getElementById('hwAecBtn');
-    btn.textContent = hwAecEnabled ? 'ON' : 'OFF';
-    btn.style.borderColor = hwAecEnabled ? 'var(--accent)' : 'var(--dim)';
-    btn.style.color = hwAecEnabled ? 'var(--accent)' : 'var(--dim)';
-  }
-
-  function getMicConstraints(){
-    const d=document.getElementById('micSelect')?.value;
-    const b={echoCancellation:hwAecEnabled,noiseSuppression:hwAecEnabled,autoGainControl:hwAecEnabled};
-    return d?{...b,deviceId:{exact:d}}:{...b,facingMode:{ideal:'environment'}};
-  }
-  async function refreshMics(){
-    try{
-      const tmp=await navigator.mediaDevices.getUserMedia({audio:true,video:false});
-      tmp.getTracks().forEach(t=>t.stop());
-      const mics=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='audioinput');
-      const sel=document.getElementById('micSelect');
-      sel.innerHTML='<option value="">Default mic</option>';
-      mics.forEach((m,i)=>{const o=document.createElement('option');o.value=m.deviceId;o.textContent=m.label||'Mic '+(i+1);sel.appendChild(o);});
-      document.getElementById('micNote').textContent=`Found ${mics.length} mic(s).`;
-    }catch(e){document.getElementById('micNote').textContent='Error: '+e.message;}
-  }
-
-  // ── Chirp latency ──────────────────────────────────────────────────────────
-  async function chirpDetect(ctx,micStream){
-    const sr=ctx.sampleRate;
-    const chirpN=Math.floor(40/1000*sr),listenN=Math.floor(500/1000*sr);
-    const cb=ctx.createBuffer(1,chirpN,sr);const cd=cb.getChannelData(0);
-    for(let i=0;i<chirpN;i++){const e=0.5-0.5*Math.cos(2*Math.PI*i/chirpN);cd[i]=e*Math.sin(2*Math.PI*15000*i/sr);}
-    const rec=new Float32Array(listenN);let rp=0;
-    const ms=ctx.createMediaStreamSource(micStream),sp=ctx.createScriptProcessor(512,1,1),sg=ctx.createGain();
-    sg.gain.value=0;ms.connect(sp);sp.connect(sg);sg.connect(ctx.destination);
-    sp.onaudioprocess=ev=>{const d=ev.inputBuffer.getChannelData(0);for(let i=0;i<d.length&&rp<listenN;i++)rec[rp++]=d[i];};
-    const cs=ctx.createBufferSource(),cg=ctx.createGain();cg.gain.value=0.9;
-    cs.buffer=cb;cs.connect(cg);cg.connect(ctx.destination);cs.start();
-    await new Promise(r=>setTimeout(r,listenN/sr*1000+80));
-    sp.disconnect();ms.disconnect();
-    let rp2=0;for(let i=0;i<chirpN;i++)rp2+=cd[i]*cd[i];
-    const refRms=Math.sqrt(rp2/chirpN)||1;
-    let bestLag=Math.floor(5/1000*sr),bestScore=-Infinity;
-    for(let lag=bestLag;lag<Math.floor(400/1000*sr)&&lag+chirpN<listenN;lag++){
-      let dot=0,mp=0;for(let j=0;j<chirpN;j++){dot+=cd[j]*rec[lag+j];mp+=rec[lag+j]*rec[lag+j];}
-      const score=dot/(chirpN*refRms*(Math.sqrt(mp/chirpN)||1));
-      if(score>bestScore){bestScore=score;bestLag=lag;}
-    }
-    return{ms:Math.round(bestLag/sr*1000),score:bestScore,samples:bestLag};
-  }
-
-  async function runLatencyDetection(){
-    if(running){setStatus('Stop first');return;}
-    detectBtn.textContent='⟳ DETECTING...';
-    try{
-      const ds=await navigator.mediaDevices.getUserMedia({audio:getMicConstraints(),video:false});
-      const dc=new AudioContext();
-      const res=await chirpDetect(dc,ds);
-      ds.getTracks().forEach(t=>t.stop());dc.close();
-      if(res.score>0.02&&res.ms>=5){
-        const c=Math.max(5,Math.min(400,res.ms));
-        latencySlider.value=c;latencyVal.textContent=c;
-        fill(latencySlider,((c-5)/(400-5))*100);
-        latencyNote.textContent=`✓ ${c}ms (score:${res.score.toFixed(3)})`;
-      }else{
-        latencyNote.textContent=`⚠ Weak (${res.score.toFixed(3)}, ${res.ms}ms)`;
-      }
-    }catch(e){latencyNote.textContent='Failed: '+e.message;}
-    detectBtn.textContent='⟳ DETECT';
-  }
-
-  // ── Auto setup ─────────────────────────────────────────────────────────────
-  async function detectFeedbackThreshold(){
-    if(running){alert('Stop first');return;}
-    const btn=document.getElementById('threshBtn');
-    btn.textContent='⟳ TESTING...';btn.disabled=true;
-    setStatus('Auto setup...');
-    try{
-      const ds=await navigator.mediaDevices.getUserMedia({audio:getMicConstraints(),video:false});
-      const dc=new AudioContext();const sr=dc.sampleRate;
-      const inG=parseFloat(inGainSlider.value);
-      setStatus('Step 1: Measuring latency...');
-      const latRes=await chirpDetect(dc,ds);
-      if(latRes.score>0.02&&latRes.ms>=5){
-        const c=Math.max(5,Math.min(400,latRes.ms));
-        latencySlider.value=c;latencyVal.textContent=c;
-        fill(latencySlider,((c-5)/(400-5))*100);
-        latencyNote.textContent=`✓ ${c}ms`;
-      }
-      setStatus('Step 2: Finding safe volume...');
-      const testBufN=Math.floor(parseFloat(delaySlider.value)*sr);
-      const testRing=new Float32Array(Math.max(testBufN,1));
-      let tw=0,tr=0,tf=false;
-      const micSrc=dc.createMediaStreamSource(ds);
-      const iGain=dc.createGain();iGain.gain.value=inG;
-      const oGain=dc.createGain();oGain.gain.value=0;
-      const proc=dc.createScriptProcessor(4096,1,1);
-      const winN=sr;let rmsBuf=new Float32Array(winN);let rmsP=0;
-      proc.onaudioprocess=e=>{
-        const inp=e.inputBuffer.getChannelData(0),out=e.outputBuffer.getChannelData(0);
-        for(let i=0;i<inp.length;i++){
-          const m=inp[i]/inG;
-          testRing[tw]=m;tw=(tw+1)%testBufN;if(!tf&&tw===0)tf=true;
-          out[i]=tf?testRing[tr]:0;tr=(tr+1)%testBufN;
-          rmsBuf[rmsP%winN]=m*m;rmsP++;
+      proc = ctx.createScriptProcessor(4096, 1, 1);
+      proc.onaudioprocess = e => {
+        const inp = e.inputBuffer.getChannelData(0);
+        const out = e.outputBuffer.getChannelData(0);
+        for (let i=0; i<inp.length; i++) {
+          ring[w] = inp[i];
+          w = (w+1) % N;
+          if (!filled && w===0) filled=true;
+          out[i] = filled ? ring[r] : 0;
+          r = (r+1) % N;
         }
-      };
-      micSrc.connect(iGain);iGain.connect(proc);proc.connect(oGain);oGain.connect(dc.destination);
-      let thresholdPct=80;
-      for(const pct of [20,30,40,50,60,70,80,90]){
-        oGain.gain.setTargetAtTime(pct/100,dc.currentTime,0.1);
-        await new Promise(r=>setTimeout(r,2000));
-        const rms1=Math.sqrt(rmsBuf.reduce((a,b)=>a+b,0)/winN);
-        await new Promise(r=>setTimeout(r,1500));
-        const rms2=Math.sqrt(rmsBuf.reduce((a,b)=>a+b,0)/winN);
-        setStatus(`Testing ${pct}%... ${rms2>rms1*1.5&&rms2>0.02?'FEEDBACK':'ok'}`);
-        if(rms2>rms1*1.5&&rms2>0.02){thresholdPct=pct;break;}
-      }
-      oGain.gain.setTargetAtTime(0,dc.currentTime,0.05);
-      await new Promise(r=>setTimeout(r,300));
-      proc.disconnect();micSrc.disconnect();ds.getTracks().forEach(t=>t.stop());dc.close();
-      const safePct=Math.max(35,Math.round(thresholdPct*0.8));
-      volumeSlider.value=safePct;volVal.textContent=safePct;
-      fill(volumeSlider,safePct);baseVolume=safePct/100;
-      setStatus(`Done! Threshold=${thresholdPct}%, safe vol=${safePct}%`);
-      document.getElementById('threshNote').textContent=`thresh:${thresholdPct}% → vol:${safePct}%`;
-    }catch(err){setStatus('Setup failed: '+err.message);console.error(err);}
-    btn.textContent='🔧 AUTO SETUP';btn.disabled=false;
-  }
-
-  // ── Debug ──────────────────────────────────────────────────────────────────
-  let debugTimer=null;
-  function startDebugTimer(){
-    stopDebugTimer();
-    debugTimer=setInterval(()=>{
-      const db=v=>v>0?(20*Math.log10(Math.sqrt(v))).toFixed(1)+'dB':'-inf';
-      document.getElementById('debugInfo').innerHTML=
-        `sr:${dbgSR} &nbsp; vol:${(baseVolume*100).toFixed(0)}%<br>`+
-        `mic:${db(dbgMic)} &nbsp; clean:${db(dbgClean)}`;
-      // ts history
-      tsHistory.push({t:Date.now(),mic:db(dbgMic),clean:db(dbgClean),vol:(baseVolume*100).toFixed(0)});
-      if(tsHistory.length>TS_SAMPLES)tsHistory.shift();
-    },250);
-  }
-  function stopDebugTimer(){if(debugTimer){clearInterval(debugTimer);debugTimer=null;}document.getElementById('debugInfo').textContent='—';}
-
-  // ── Save ───────────────────────────────────────────────────────────────────
-  function saveLast(){
-    if(!rollingBuf||(!rollingFull&&rollingW===0))return;
-    const sr=audioCtx?.sampleRate||48000,size=rollingFull?rollingSize:rollingW;
-    const out=new Float32Array(size);
-    if(rollingFull){out.set(rollingBuf.slice(rollingW));out.set(rollingBuf.slice(0,rollingW),rollingSize-rollingW);}
-    else out.set(rollingBuf.slice(0,rollingW));
-    const gain=inGainNode?.gain.value||1;
-    for(let i=0;i<out.length;i++)out[i]=Math.max(-1,Math.min(1,out[i]*gain));
-    encodeAndDownload(out,sr,'last-10s.wav');
-    document.getElementById('saveStatus').textContent=`✓ Saved ${(size/sr).toFixed(1)}s`;
-  }
-  function encodeAndDownload(samples,sr,filename){
-    const buf=new ArrayBuffer(44+samples.length*2);const v=new DataView(buf);
-    const ws=(o,s)=>{for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i));};
-    ws(0,'RIFF');v.setUint32(4,36+samples.length*2,true);ws(8,'WAVE');ws(12,'fmt ');
-    v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);
-    v.setUint32(24,sr,true);v.setUint32(28,sr*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);
-    ws(36,'data');v.setUint32(40,samples.length*2,true);
-    for(let i=0;i<samples.length;i++){const s=Math.max(-1,Math.min(1,samples[i]));v.setInt16(44+i*2,s<0?s*0x8000:s*0x7FFF,true);}
-    const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([buf],{type:'audio/wav'}));a.download=filename;a.click();
-  }
-
-  async function uploadDebugBundle(){
-    const btn=document.getElementById('debugUploadBtn');
-    const result=document.getElementById('uploadResult');
-    result.style.display='block';result.textContent='Building...';btn.disabled=true;
-    try{
-      const db=v=>v>0?(20*Math.log10(Math.sqrt(v))).toFixed(1)+'dB':'-inf';
-      const bundle={
-        timestamp:new Date().toISOString(),
-        version:document.querySelector('[style*="background:var(--accent)"]')?.textContent?.trim()||'v6.0',
-        settings:{delayS:parseFloat(delaySlider.value),outputVolPct:parseInt(volumeSlider.value),
-          inputGainX:parseFloat(inGainSlider.value),latencyMs:parseInt(latencySlider.value),
-          sampleRate:audioCtx?.sampleRate||48000},
-        metrics:{micRMS:db(dbgMic),cleanRMS:db(dbgClean),spkGain:dbgSpkGain.toFixed(3)},
-        timeSeries:[...tsHistory]
-      };
-      const json=JSON.stringify(bundle,null,2);
-      const blob=new Blob([json],{type:'application/json'});
-      result.textContent='Uploading...';
-      let url=null;
-      try{const fd=new FormData();fd.append('file',blob,'echo-debug.json');const r=await fetch('https://0x0.st',{method:'POST',body:fd});if(r.ok)url=(await r.text()).trim();}catch(e){}
-      if(!url){try{const r=await fetch('https://transfer.sh/echo-debug.json',{method:'PUT',body:blob,headers:{'Max-Days':'1'}});if(r.ok)url=(await r.text()).trim();}catch(e){}}
-      if(url){result.innerHTML=`\u2713<br><br><strong style="font-size:17px;">${url}</strong><br><br>Paste into Claude chat.`;}
-      else{result.innerHTML=`<textarea style="width:100%;height:120px;background:#0a0a0a;color:#44aaff;border:1px solid #333;font-size:10px;padding:6px;" readonly>${json}</textarea>`;}
-    }catch(err){result.textContent='Error: '+err.message;}
-    btn.disabled=false;
-  }
-
-  // ── Main engine ────────────────────────────────────────────────────────────
-  async function toggle(){if(!running)await start();else stop();}
-
-  async function start(){
-    try{
-      setStatus('Opening mic...');
-      stream=await navigator.mediaDevices.getUserMedia({audio:getMicConstraints(),video:false});
-      audioCtx=new AudioContext();
-      const sr=audioCtx.sampleRate;
-      const delaySec=parseFloat(delaySlider.value);
-      const vol=parseInt(volumeSlider.value)/100;
-      const inGain=parseFloat(inGainSlider.value);
-      baseVolume=vol; dbgSR=sr;
-
-      bufN=Math.floor(delaySec*sr);
-      ringBuf=new Float32Array(bufN);wPos=0;rPos=0;filled=false;
-      rollingSize=Math.floor(10*sr);
-      rollingBuf=new Float32Array(rollingSize);rollingW=0;rollingFull=false;
-
-      sourceNode=audioCtx.createMediaStreamSource(stream);
-      analyser=audioCtx.createAnalyser();analyser.fftSize=256;
-      inGainNode=audioCtx.createGain();inGainNode.gain.value=inGain;
-      outGainNode=audioCtx.createGain();outGainNode.gain.value=vol;
-
-      // Compressor on input — boosts quiet sounds, limits loud ones
-      // Makes quiet room audio more present in the delayed playback
-      // Compressor on output — makes delayed audio more present at low volume
-      // Doesn't affect loop gain since it's after the delay buffer
-      const compressor=audioCtx.createDynamicsCompressor();
-      compressor.threshold.value=-24; // compress above -24dB
-      compressor.knee.value=6;
-      compressor.ratio.value=3;       // gentle 3:1
-      compressor.attack.value=0.01;
-      compressor.release.value=0.3;
-
-      procNode=audioCtx.createScriptProcessor(4096,1,1);
-      procNode.onaudioprocess=e=>{
-        const inp=e.inputBuffer.getChannelData(0);
-        const out=e.outputBuffer.getChannelData(0);
-        const iGain=inGainNode.gain.value;
-        let micPow=0,cleanPow=0;
-
-        for(let i=0;i<inp.length;i++){
-          const micRaw=inp[i]/iGain;
-
-          rollingBuf[rollingW]=micRaw;
-          rollingW=(rollingW+1)%rollingSize;
-          if(!rollingFull&&rollingW===0)rollingFull=true;
-
-          micPow+=micRaw*micRaw;
-
-          ringBuf[wPos]=micRaw;
-          wPos=(wPos+1)%bufN;
-          if(!filled&&wPos===0)filled=true;
-          const outSample=filled?ringBuf[rPos]:0;
-          rPos=(rPos+1)%bufN;
-          out[i]=outSample;
-          cleanPow+=outSample*outSample;
-        }
-
-        const n=inp.length;
-        dbgMic=micPow/n;dbgClean=cleanPow/n;
-        dbgSpkGain=outGainNode.gain.value*iGain;
-
-        if(filled){bufferFill.style.width='100%';bufferLabel.textContent=`Buffer: ${delaySec.toFixed(1)}s / ${delaySec.toFixed(1)}s`;}
-        else{bufferFill.style.width=((wPos/bufN)*100)+'%';bufferLabel.textContent=`Buffer: ${(wPos/sr).toFixed(1)}s / ${delaySec.toFixed(1)}s`;}
+        const pct = filled ? 100 : Math.floor(w/N*100);
+        document.getElementById('bar').style.width = pct + '%';
+        document.getElementById('status').textContent = filled
+          ? `Live — ${sec.toFixed(1)}s delay`
+          : `Buffering... ${pct}%`;
       };
 
-      sourceNode.connect(analyser);
-      sourceNode.connect(inGainNode);
-      inGainNode.connect(procNode);
-      procNode.connect(outGainNode);
-      outGainNode.connect(compressor);
-      compressor.connect(audioCtx.destination);
+      src.connect(inGain);
+      inGain.connect(proc);
+      proc.connect(outGain);
+      outGain.connect(ctx.destination);
 
-      running=true;
-      mainBtn.textContent='■ Stop';
-      mainBtn.classList.add('active','stop');
-      statusDot.classList.add('live');
-      setStatus('Live — v6.6');
-      startDebugTimer();
-      if (strobeEnabled) startStrobe();
-      drawViz();
-    }catch(err){setStatus('Error: '+err.message);console.error(err);}
-  }
+      running = true;
+      document.getElementById('btn').textContent = '■ STOP';
+      document.getElementById('btn').classList.add('on');
+      document.getElementById('dot').classList.add('live');
 
-  function stop(){
-    stopStrobe();
-    stopDebugTimer();
-    if(procNode){procNode.disconnect();procNode=null;}
-    if(inGainNode){inGainNode.disconnect();inGainNode=null;}
-    if(outGainNode){outGainNode.disconnect();outGainNode=null;}
-    if(sourceNode){sourceNode.disconnect();sourceNode=null;}
-    if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
-    if(audioCtx){audioCtx.close();audioCtx=null;}
-    ringBuf=null;rollingBuf=null;
-    running=false;filled=false;
-    mainBtn.textContent='▶ Start Listening';
-    mainBtn.classList.remove('active','stop');
-    statusDot.classList.remove('live');
-    setStatus('Idle — Click start to begin');
-    bufferFill.style.width='0%';
-    bufferLabel.textContent='Buffer: 0.0s / 0.0s';
-    ctx2d.clearRect(0,0,canvas.width,canvas.height);
-  }
-
-  function setStatus(msg){statusText.textContent=msg;}
-
-  function drawViz(){
-    if(!running||!analyser)return;
-    requestAnimationFrame(drawViz);
-    const W=canvas.clientWidth*devicePixelRatio,H=canvas.clientHeight*devicePixelRatio;
-    if(canvas.width!==W||canvas.height!==H){canvas.width=W;canvas.height=H;}
-    const data=new Uint8Array(analyser.frequencyBinCount);
-    analyser.getByteTimeDomainData(data);
-    ctx2d.clearRect(0,0,W,H);
-    ctx2d.strokeStyle='rgba(0,255,170,0.8)';ctx2d.lineWidth=1.5;
-    ctx2d.shadowColor='rgba(0,255,170,0.4)';ctx2d.shadowBlur=6;
-    ctx2d.beginPath();
-    const sw=W/data.length;let x=0;
-    for(let i=0;i<data.length;i++){
-      const y=(data[i]/128.0)*(H/2);
-      if(i===0)ctx2d.moveTo(x,y);else ctx2d.lineTo(x,y);x+=sw;
+    } catch(err) {
+      document.getElementById('status').textContent = 'Error: ' + err.message;
     }
-    ctx2d.stroke();ctx2d.shadowBlur=0;
   }
 
-  if('serviceWorker' in navigator)
-    window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
+  function stop() {
+    if(proc)    { proc.disconnect();    proc=null; }
+    if(inGain)  { inGain.disconnect();  inGain=null; }
+    if(outGain) { outGain.disconnect(); outGain=null; }
+    if(stream)  { stream.getTracks().forEach(t=>t.stop()); stream=null; }
+    if(ctx)     { ctx.close(); ctx=null; }
+    ring=null; running=false; filled=false;
+    document.getElementById('btn').textContent = '▶ START';
+    document.getElementById('btn').classList.remove('on');
+    document.getElementById('dot').classList.remove('live');
+    document.getElementById('status').textContent = 'Ready';
+    document.getElementById('bar').style.width = '0%';
+  }
 </script>
 </body>
 </html>
