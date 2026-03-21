@@ -54,7 +54,7 @@
 
 <h1>ECHO</h1>
 <div class="sub">DELAY EVERYTHING</div>
-<div class="version">v1.2</div>
+<div class="version">v1.4</div>
 
 <div class="panel">
   <div class="label-row">
@@ -96,6 +96,8 @@
 
 <button class="btn" id="btn" onclick="toggle()">▶ START</button>
 
+<div style="margin-top:12px;background:#111;border:2px solid var(--accent);border-radius:4px;padding:12px;font-size:12px;color:var(--accent);line-height:1.8;word-break:break-all;width:100%;max-width:400px;height:200px;overflow-y:auto;" id="dbg">—</div>
+
 <div class="status"><span class="dot" id="dot"></span><span id="status">Ready</span></div>
 <div class="bar-wrap" style="width:100%;max-width:400px;margin-top:10px;">
   <div class="bar-fill" id="bar"></div>
@@ -104,6 +106,42 @@
 <script>
   let ctx=null, stream=null, proc=null, inGain=null, outGain=null, running=false;
   let ring=null, w=0, r=0, filled=false, N=0;
+
+  // Debug
+  let dbgTimer = null;
+  let dbgMicPow = 0, dbgOutPow = 0, dbgFilled = false, dbgSR = 0;
+
+  const TS_MAX = 20;
+  let tsData = [];
+
+  function startDbg(sr) {
+    dbgSR = sr;
+    tsData = [];
+    stopDbg();
+    const mic = document.getElementById('micSel');
+    const micLabel = mic.options[mic.selectedIndex]?.text || 'default';
+
+    dbgTimer = setInterval(() => {
+      const db = v => v > 0 ? (20*Math.log10(Math.sqrt(v))).toFixed(1) : '-inf';
+      const now = new Date().toLocaleTimeString('en',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+      tsData.push({ t: now, mic: db(dbgMicPow), out: db(dbgOutPow), filled: dbgFilled });
+      if (tsData.length > TS_MAX) tsData.shift();
+
+      // Build display — most recent at top
+      const rows = [...tsData].reverse().map((s,i) => {
+        const style = i===0 ? 'color:var(--accent)' : 'color:var(--dim)';
+        const f = s.filled ? '✓' : '…';
+        return `<span style="${style}">${s.t} ${f} mic:${s.mic}dB out:${s.out}dB</span>`;
+      }).join('<br>');
+
+      document.getElementById('dbg').innerHTML =
+        `<span style="color:var(--dim);font-size:10px;">sr:${dbgSR} · ${micLabel.substring(0,25)}</span><br>` + rows;
+    }, 250);
+  }
+  function stopDbg() {
+    if (dbgTimer) { clearInterval(dbgTimer); dbgTimer = null; }
+    document.getElementById('dbg').textContent = '—';
+  }
 
   async function scanMics() {
     try {
@@ -169,13 +207,19 @@
       proc.onaudioprocess = e => {
         const inp = e.inputBuffer.getChannelData(0);
         const out = e.outputBuffer.getChannelData(0);
+        let mp=0, op=0;
         for (let i=0; i<inp.length; i++) {
           ring[w] = inp[i];
           w = (w+1) % N;
           if (!filled && w===0) filled=true;
           out[i] = filled ? ring[r] : 0;
           r = (r+1) % N;
+          mp += inp[i]*inp[i];
+          op += out[i]*out[i];
         }
+        dbgMicPow = mp/inp.length;
+        dbgOutPow = op/inp.length;
+        dbgFilled = filled;
         const pct = filled ? 100 : Math.floor(w/N*100);
         document.getElementById('bar').style.width = pct + '%';
         document.getElementById('status').textContent = filled
@@ -192,6 +236,7 @@
       document.getElementById('btn').textContent = '■ STOP';
       document.getElementById('btn').classList.add('on');
       document.getElementById('dot').classList.add('live');
+      startDbg(sr);
 
     } catch(err) {
       document.getElementById('status').textContent = 'Error: ' + err.message;
@@ -205,6 +250,7 @@
     if(stream)  { stream.getTracks().forEach(t=>t.stop()); stream=null; }
     if(ctx)     { ctx.close(); ctx=null; }
     ring=null; running=false; filled=false;
+    stopDbg();
     document.getElementById('btn').textContent = '▶ START';
     document.getElementById('btn').classList.remove('on');
     document.getElementById('dot').classList.remove('live');
