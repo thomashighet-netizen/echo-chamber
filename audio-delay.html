@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v4.9</div>
+    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v5.0</div>
   </header>
 
   <!-- Delay control -->
@@ -446,10 +446,12 @@
   <!-- Debug panel -->
   <div style="margin-top:12px;background:#111;border:2px solid var(--accent);border-radius:4px;padding:12px;font-size:13px;letter-spacing:0.08em;color:var(--accent);line-height:2;word-break:break-all;min-height:60px;" id="debugInfo">—</div>
   <div style="margin-top:6px;font-size:11px;letter-spacing:0.1em;color:var(--warn);padding:2px;" id="saveStatus"></div>
+  <div style="margin-top:4px;font-size:11px;letter-spacing:0.1em;color:#44aaff;padding:2px;" id="notchNote">notch: idle</div>
 
   <!-- Save last button -->
   <button class="btn" id="saveBtn" onclick="saveLast()" style="margin-top:10px;border-color:var(--warn);color:var(--warn);">⚡ SAVE LAST 10s</button>
   <div style="display:flex;gap:8px;margin-top:8px;margin-bottom:0;">
+    <button onclick="notchActive=!notchActive;if(!notchActive){notchFreq=0;}this.textContent=notchActive?'🎚 NOTCH ON':'🎚 NOTCH OFF';this.style.borderColor=notchActive?'var(--accent)':'var(--dim)';this.style.color=notchActive?'var(--accent)':'var(--dim)';" style="font-family:'Share Tech Mono',monospace;font-size:11px;letter-spacing:0.15em;background:transparent;border:1px solid var(--accent);color:var(--accent);padding:8px 12px;border-radius:3px;cursor:pointer;flex:1;">🎚 NOTCH ON</button>
     <button onclick="duckActive=!duckActive;this.textContent=duckActive?'🦆 DUCK ON':'🦆 DUCK OFF';this.style.borderColor=duckActive?'var(--accent)':'var(--dim)';this.style.color=duckActive?'var(--accent)':'var(--dim)';" style="font-family:'Share Tech Mono',monospace;font-size:11px;letter-spacing:0.15em;background:transparent;border:1px solid var(--accent);color:var(--accent);padding:8px 12px;border-radius:3px;cursor:pointer;flex:1;">🦆 DUCK ON</button>
   </div>
   <button class="btn" id="threshBtn" onclick="detectFeedbackThreshold()" style="margin-top:8px;border-color:#44aaff;color:#44aaff;">🔧 AUTO SETUP (latency + safe volume)</button>
@@ -502,7 +504,87 @@
 
   let dbgMic = 0, dbgRef = 0, dbgClean = 0, dbgSpkGain = 1, dbgSR = 0;
 
-  // Feedback control
+  // Notch filter for feedback — targets specific feedback frequencies
+  // Uses a 2nd-order IIR notch filter, adapts to detected feedback frequency
+  let notchActive = true;
+  let notchFreq   = 0;      // current notch frequency (0 = inactive)
+  let notchB0=1, notchB1=0, notchB2=0, notchA1=0, notchA2=0; // filter coeffs
+  let notchX1=0, notchX2=0, notchY1=0, notchY2=0;              // filter state
+  const NOTCH_Q = 8;        // narrow notch (higher = narrower)
+
+  function setNotch(freq, sr) {
+    if (freq <= 0 || freq >= sr/2) { notchFreq=0; return; }
+    notchFreq = freq;
+    const w0  = 2*Math.PI*freq/sr;
+    const cos = Math.cos(w0);
+    const alpha = Math.sin(w0)/(2*NOTCH_Q);
+    const a0  = 1 + alpha;
+    notchB0 =  1/a0;
+    notchB1 = -2*cos/a0;
+    notchB2 =  1/a0;
+    notchA1 = -2*cos/a0;
+    notchA2 = (1-alpha)/a0;
+    notchX1=0; notchX2=0; notchY1=0; notchY2=0;
+  }
+
+  function applyNotch(x) {
+    const y = notchB0*x + notchB1*notchX1 + notchB2*notchX2
+                        - notchA1*notchY1 - notchA2*notchY2;
+    notchX2=notchX1; notchX1=x;
+    notchY2=notchY1; notchY1=y;
+    return y;
+  }
+
+  // FFT-based feedback detector — runs every N blocks
+  let fftBuf      = null;
+  let fftPos      = 0;
+  const FFT_SIZE  = 2048;
+  let fftTimer    = null;
+
+  function startFftDetector(sr) {
+    fftBuf = new Float32Array(FFT_SIZE);
+    fftPos = 0;
+    fftTimer = setInterval(() => {
+      if (!fftBuf || !notchActive) return;
+      // Simple DFT on the buffer to find dominant frequency
+      // Check 100Hz-4000Hz range (typical feedback frequencies)
+      const minBin = Math.floor(100 * FFT_SIZE / sr);
+      const maxBin = Math.floor(4000 * FFT_SIZE / sr);
+      let   maxPow = 0, maxBin_ = 0, totalPow = 0;
+      const spectrum = new Float32Array(maxBin - minBin);
+      for (let k = minBin; k < maxBin; k++) {
+        let re=0, im=0;
+        for (let n=0; n<FFT_SIZE; n++) {
+          const angle = 2*Math.PI*k*n/FFT_SIZE;
+          re += fftBuf[n]*Math.cos(angle);
+          im += fftBuf[n]*Math.sin(angle);
+        }
+        const pow = re*re + im*im;
+        spectrum[k-minBin] = pow;
+        totalPow += pow;
+        if (pow > maxPow) { maxPow=pow; maxBin_=k; }
+      }
+      // Feedback: one bin dominates — peak > 40% of total power
+      const peakRatio = totalPow > 0 ? maxPow/totalPow : 0;
+      if (peakRatio > 0.4 && maxPow > 0) {
+        const feedbackFreq = maxBin_ * sr / FFT_SIZE;
+        setNotch(feedbackFreq, sr);
+        document.getElementById('notchNote').textContent = `notch: ${feedbackFreq.toFixed(0)}Hz (${(peakRatio*100).toFixed(0)}%)`;
+      } else {
+        // No dominant frequency — clear notch
+        notchFreq = 0;
+        document.getElementById('notchNote').textContent = 'no feedback freq';
+      }
+    }, 500); // check every 500ms
+  }
+
+  function stopFftDetector() {
+    if (fftTimer) { clearInterval(fftTimer); fftTimer=null; }
+    notchFreq=0;
+    notchX1=0; notchX2=0; notchY1=0; notchY2=0;
+  }
+
+  // Feedback control (loop breaker as backup)
   let duckActive   = true;
   let duckGain     = 1.0;
   let baseVolume   = 0.8;
@@ -988,10 +1070,14 @@
           wPos=(wPos+1)%bufN;
           if(!filled&&wPos===0) filled=true;
 
-          // Read delayed output
-          const outSample = filled?ringBuf[rPos]:0;
+          // Read delayed output — apply notch filter if feedback detected
+          let outSample = filled?ringBuf[rPos]:0;
           rPos=(rPos+1)%bufN;
+          if (notchFreq > 0) outSample = applyNotch(outSample);
           out[i]=outSample;
+
+          // Feed FFT buffer
+          if (fftBuf) { fftBuf[fftPos%FFT_SIZE]=outSample; fftPos++; }
 
           // Store speaker output in refBuf
           refBuf[refW]=outSample*oGain;
@@ -1039,9 +1125,10 @@
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v4.9');
+      setStatus('Live — v5.0');
       startDebugTimer();
       startLoopBreaker();
+      startFftDetector(sr);
       drawViz();
     } catch(err){
       setStatus('Error: '+err.message);
@@ -1051,6 +1138,7 @@
 
   function stop() {
     stopLoopBreaker();
+    stopFftDetector();
     stopDebugTimer();
     if(procNode)    {procNode.disconnect();    procNode=null;}
     if(inGainNode)  {inGainNode.disconnect();  inGainNode=null;}
