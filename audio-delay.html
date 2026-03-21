@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v3.6</div>
+    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v3.7</div>
   </header>
 
   <!-- Delay control -->
@@ -663,39 +663,38 @@
       return;
     }
 
-    const sr      = audioCtx.sampleRate;
-    const blockN  = 8192;  // fixed snapshot size
+    const sr     = audioCtx.sampleRate;
+    const blockN = 4096;
 
-    // Take a fixed snapshot of mic and ref RIGHT NOW — won't change during sweep
+    // Snapshot mic (from rolling buffer) and ref (from refBuf) — frozen at this moment
     const micSnap = new Float32Array(blockN);
     const refSnap = new Float32Array(blockN);
-
     for (let i = 0; i < blockN; i++) {
-      // mic: last blockN samples from rolling buffer in chronological order
-      const mi = (rollingW - blockN + i + rollingSize * 4) % rollingSize;
-      micSnap[i] = rollingBuf[mi];
-
-      // ref: last blockN samples from refBuf in chronological order
-      const ri = (refW - blockN + i + refBufSize * 4) % refBufSize;
-      refSnap[i] = refBuf[ri];
+      micSnap[i] = rollingBuf[(rollingW - blockN + i + rollingSize * 4) % rollingSize];
+      refSnap[i] = refBuf[(refW - blockN + i + refBufSize * 4) % refBufSize];
     }
 
-    // Now sweep latency — for each lag, shift refSnap relative to micSnap
-    // and measure how much power remains after subtraction
+    // Normalise both to unit power for clean cross-correlation
+    const norm = a => {
+      let s=0; for(let i=0;i<a.length;i++) s+=a[i]*a[i];
+      const rms=Math.sqrt(s/a.length)||1;
+      return a.map(x=>x/rms);
+    };
+    const mic = norm(micSnap);
+    const ref = norm(refSnap);
+
+    // Cross-correlate: find lag where ref best predicts mic
+    // Peak correlation = best alignment = true latency
     const minLag = Math.floor(10  / 1000 * sr);
     const maxLag = Math.floor(400 / 1000 * sr);
-    let bestLag = latN, bestPow = Infinity;
+    let bestLag = latN, bestCorr = -Infinity;
 
-    for (let lag = minLag; lag <= maxLag; lag += Math.floor(sr / 1000)) {
-      // lag = how many samples ahead refSnap is relative to micSnap
-      // i.e. refSnap[i - lag] is what the mic hears at micSnap[i]
-      let pow = 0;
-      const start = lag;
-      for (let i = start; i < blockN; i++) {
-        const clean = micSnap[i] - refSnap[i - lag] * echoGain;
-        pow += clean * clean;
+    for (let lag = minLag; lag <= maxLag; lag++) {
+      let corr = 0;
+      for (let i = lag; i < blockN; i++) {
+        corr += mic[i] * ref[i - lag];
       }
-      if (pow < bestPow) { bestPow = pow; bestLag = lag; }
+      if (corr > bestCorr) { bestCorr = corr; bestLag = lag; }
     }
 
     const bestMs = Math.round(bestLag / sr * 1000);
@@ -703,8 +702,8 @@
     latencySlider.value = Math.min(400, bestMs);
     latencyVal.textContent = Math.min(400, bestMs);
     fill(latencySlider, ((Math.min(400, bestMs) - 5) / (400 - 5)) * 100);
-    latencyNote.textContent = `✓ Swept to ${bestMs}ms`;
-    document.getElementById('sweepNote').textContent = `→ ${bestMs}ms`;
+    latencyNote.textContent = `✓ XCorr → ${bestMs}ms (r=${bestCorr.toFixed(2)})`;
+    document.getElementById('sweepNote').textContent = `→ ${bestMs}ms r=${bestCorr.toFixed(2)}`;
   }
 
   function autoEchoGain() {
@@ -1104,7 +1103,7 @@ pre{background:#0a0a0a;border:1px solid #222;padding:10px;font-size:10px;overflo
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v3.6');
+      setStatus('Live — v3.7');
       startDebugTimer();
       drawViz();
 
