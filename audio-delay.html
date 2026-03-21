@@ -54,7 +54,7 @@
 
 <h1>ECHO</h1>
 <div class="sub">DELAY EVERYTHING</div>
-<div class="version">v1.6</div>
+<div class="version">v1.8</div>
 
 <div class="panel">
   <div class="label-row">
@@ -102,9 +102,20 @@
   <select id="outSel" style="font-family:'Share Tech Mono',monospace;font-size:12px;background:#0a0a0a;border:1px solid var(--border);color:var(--text);padding:8px;border-radius:3px;width:100%;">
     <option value="">Default (phone speaker)</option>
   </select>
-  <div style="font-size:9px;color:var(--dim);margin-top:6px;" id="outHint">Note: if BT headphones are connected, Android may force audio through them regardless.</div>
+  <div style="margin-top:8px;">
+    <div class="label" style="margin-bottom:6px;">AUDIO MODE</div>
+    <select id="audioMode" style="font-family:'Share Tech Mono',monospace;font-size:12px;background:#0a0a0a;border:1px solid var(--border);color:var(--text);padding:8px;border-radius:3px;width:100%;">
+      <option value="playback">Playback (default)</option>
+      <option value="interactive">Interactive</option>
+      <option value="balanced">Balanced</option>
+    </select>
+  </div>
+  <div style="font-size:9px;color:var(--dim);margin-top:6px;" id="outHint">Try different Audio Mode if BT headphones are stealing output. 'Interactive' may force phone speaker.</div>
 </div>
 
+<div style="display:flex;gap:8px;width:100%;max-width:400px;margin-bottom:10px;">
+  <button onclick="testTone()" style="font-family:'Share Tech Mono',monospace;font-size:13px;letter-spacing:0.2em;background:transparent;border:2px solid var(--warn);color:var(--warn);padding:14px;border-radius:4px;cursor:pointer;flex:1;">🔔 TEST TONE</button>
+</div>
 <button class="btn" id="btn" onclick="toggle()">▶ START</button>
 
 <div style="margin-top:12px;background:#111;border:2px solid var(--accent);border-radius:4px;padding:12px;font-size:12px;color:var(--accent);line-height:1.8;word-break:break-all;width:100%;max-width:400px;height:200px;overflow-y:auto;" id="dbg">—</div>
@@ -171,6 +182,7 @@
         micBoost:  parseFloat(document.getElementById('gainSlider').value),
         micDevice: mic.options[mic.selectedIndex]?.text || 'default',
         outDevice: document.getElementById('outSel').options[document.getElementById('outSel').selectedIndex]?.text || 'default',
+        audioMode: document.getElementById('audioMode').value,
         ctxState: ctx?.state || 'null',
         sampleRate: dbgSR,
         filled: dbgFilled
@@ -213,6 +225,27 @@
     }
   }
 
+  // Test tone — plays 440Hz for 1s to verify audio output works at all
+  async function testTone() {
+    try {
+      const tc = new AudioContext();
+      await tc.resume();
+      const osc = tc.createOscillator();
+      const g   = tc.createGain();
+      osc.frequency.value = 440;
+      g.gain.value = 0.3;
+      osc.connect(g);
+      g.connect(tc.destination);
+      osc.start();
+      g.gain.setTargetAtTime(0, tc.currentTime + 0.8, 0.1);
+      osc.stop(tc.currentTime + 1.2);
+      setTimeout(() => tc.close(), 1500);
+      document.getElementById('shareNote').textContent = 'Test tone played — did you hear it?';
+    } catch(e) {
+      document.getElementById('shareNote').textContent = 'Test tone failed: ' + e.message;
+    }
+  }
+
   // Resume AudioContext if suspended (Android Chrome sometimes suspends it)
   function ensureCtxRunning() {
     if (ctx && ctx.state === 'suspended') {
@@ -225,19 +258,29 @@
       const devices = await navigator.mediaDevices.enumerateDevices();
       const outputs = devices.filter(d => d.kind === 'audiooutput');
       const sel = document.getElementById('outSel');
-      sel.innerHTML = '<option value="">Default (phone speaker)</option>';
+      sel.innerHTML = '<option value="">Default</option>';
+      let speakerFound = false;
       outputs.forEach((o, i) => {
         const opt = document.createElement('option');
         opt.value = o.deviceId;
-        opt.textContent = o.label || 'Output ' + (i+1);
-        if (o.label.toLowerCase().includes('speaker')) opt.selected = true;
+        const label = o.label || 'Output ' + (i+1);
+        const isPhone = label.toLowerCase().includes('speaker') ||
+                        label.toLowerCase().includes('earpiece') ||
+                        o.deviceId === 'default';
+        const isBT   = label.toLowerCase().includes('bluetooth') ||
+                        label.toLowerCase().includes('bt') ||
+                        label.toLowerCase().includes('wireless');
+        opt.textContent = (isPhone ? '📱 ' : isBT ? '🎧 ' : '') + label;
+        if (isPhone && !speakerFound) { opt.selected = true; speakerFound = true; }
         sel.appendChild(opt);
       });
       const hint = document.getElementById('outHint');
       if (outputs.length === 0) {
-        hint.textContent = 'No output devices found — browser may not support output selection on Android.';
+        hint.textContent = 'Output selection not supported on this browser/device.';
+      } else if (speakerFound) {
+        hint.textContent = `✓ Phone speaker selected. ${outputs.length} output(s) found.`;
       } else {
-        hint.textContent = `Found ${outputs.length} output(s). Select phone speaker to play out loud.`;
+        hint.textContent = `${outputs.length} output(s) found — select 📱 phone speaker.`;
       }
     } catch(e) {
       document.getElementById('outHint').textContent = 'Error: ' + e.message;
@@ -290,11 +333,22 @@
     try {
       document.getElementById('status').textContent = 'Opening mic...';
       stream = await navigator.mediaDevices.getUserMedia({ audio: getMicConstraints(), video: false });
-      // Try to set output device if setSinkId is supported
       const outDeviceId = document.getElementById('outSel').value;
-      ctx = new AudioContext();
-      if (outDeviceId && ctx.setSinkId) {
-        ctx.setSinkId(outDeviceId).catch(e => console.warn('setSinkId failed:', e));
+      const audioMode   = document.getElementById('audioMode').value;
+
+      // 'communications' latencyHint may route to phone speaker on Android
+      // even when BT headphones are connected (same as speakerphone in calls)
+      ctx = new AudioContext({ latencyHint: audioMode });
+
+      if (ctx.setSinkId) {
+        const sinkId = outDeviceId || 'default';
+        ctx.setSinkId(sinkId)
+          .then(() => {
+            document.getElementById('outHint').textContent = `✓ Output set to: ${sinkId}`;
+          })
+          .catch(e => {
+            document.getElementById('outHint').textContent = '⚠ setSinkId failed: ' + e.message;
+          });
       }
       const sr  = ctx.sampleRate;
       const sec = parseFloat(document.getElementById('delaySlider').value);
