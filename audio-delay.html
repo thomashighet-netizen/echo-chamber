@@ -320,7 +320,7 @@
   <header>
     <div class="title">ECHO</div>
     <div class="subtitle">Variable Delay Monitor</div>
-    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v5.0</div>
+    <div class="version-badge" style="display:inline-block;margin-top:8px;background:var(--accent);color:#000;font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:bold;letter-spacing:0.2em;padding:3px 10px;border-radius:2px;">v5.1</div>
   </header>
 
   <!-- Delay control -->
@@ -450,9 +450,9 @@
 
   <!-- Save last button -->
   <button class="btn" id="saveBtn" onclick="saveLast()" style="margin-top:10px;border-color:var(--warn);color:var(--warn);">⚡ SAVE LAST 10s</button>
-  <div style="display:flex;gap:8px;margin-top:8px;margin-bottom:0;">
-    <button onclick="notchActive=!notchActive;if(!notchActive){notchFreq=0;}this.textContent=notchActive?'🎚 NOTCH ON':'🎚 NOTCH OFF';this.style.borderColor=notchActive?'var(--accent)':'var(--dim)';this.style.color=notchActive?'var(--accent)':'var(--dim)';" style="font-family:'Share Tech Mono',monospace;font-size:11px;letter-spacing:0.15em;background:transparent;border:1px solid var(--accent);color:var(--accent);padding:8px 12px;border-radius:3px;cursor:pointer;flex:1;">🎚 NOTCH ON</button>
-    <button onclick="duckActive=!duckActive;this.textContent=duckActive?'🦆 DUCK ON':'🦆 DUCK OFF';this.style.borderColor=duckActive?'var(--accent)':'var(--dim)';this.style.color=duckActive?'var(--accent)':'var(--dim)';" style="font-family:'Share Tech Mono',monospace;font-size:11px;letter-spacing:0.15em;background:transparent;border:1px solid var(--accent);color:var(--accent);padding:8px 12px;border-radius:3px;cursor:pointer;flex:1;">🦆 DUCK ON</button>
+  <div style="display:flex;gap:8px;margin-top:8px;">
+    <button class="btn" onclick="notchActive=!notchActive;if(!notchActive){notchFreq=0;}this.textContent=notchActive?'🎚 NOTCH ON':'🎚 NOTCH OFF';this.style.borderColor=notchActive?'var(--accent)':'var(--dim)';this.style.color=notchActive?'var(--accent)':'var(--dim)';" style="margin:0;flex:1;">🎚 NOTCH ON</button>
+    <button class="btn" onclick="duckActive=!duckActive;this.textContent=duckActive?'🦆 DUCK ON':'🦆 DUCK OFF';this.style.borderColor=duckActive?'var(--accent)':'var(--dim)';this.style.color=duckActive?'var(--accent)':'var(--dim)';" style="margin:0;flex:1;">🦆 DUCK ON</button>
   </div>
   <button class="btn" id="threshBtn" onclick="detectFeedbackThreshold()" style="margin-top:8px;border-color:#44aaff;color:#44aaff;">🔧 AUTO SETUP (latency + safe volume)</button>
   <div style="margin-top:4px;font-size:11px;color:#44aaff;padding:2px;" id="threshNote">Measures latency and finds safe volume automatically. ~20s. Keep quiet.</div>
@@ -1125,7 +1125,7 @@
       mainBtn.textContent='■ Stop';
       mainBtn.classList.add('active','stop');
       statusDot.classList.add('live');
-      setStatus('Live — v5.0');
+      setStatus('Live — v5.1');
       startDebugTimer();
       startLoopBreaker();
       startFftDetector(sr);
